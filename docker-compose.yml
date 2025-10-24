@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    env_file: .env
+    # публикуем только на localhost, чтобы наружу не торчал :8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-fsS", "http://localhost:8000/healthz" ]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build: .
+    command: [ "arq", "services.queue.WorkerSettings" ]
+    env_file: .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # arq-broadcast:
+  #   build: .
+  #   command: [ "arq", "services.broadcast.WorkerSettings" ]
+  #   env_file: .env
+  #   depends_on:
+  #     - redis
+  #   restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: [ "redis-server", "--maxmemory-policy", "allkeys-lru" ]
+    restart: unless-stopped
