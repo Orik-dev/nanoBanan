@@ -24,6 +24,18 @@ services:
       - redis
     restart: unless-stopped
 
+  cleanup:
+    build: .
+    command: >
+      sh -c " while true; do
+        python cleanup_redis.py;
+        sleep 3600;
+      done "
+    env_file: .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
   # arq-broadcast:
   #   build: .
   #   command: [ "arq", "services.broadcast.WorkerSettings" ]
