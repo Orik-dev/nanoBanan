@@ -46,5 +46,5 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: [ "redis-server", "--maxmemory-policy", "allkeys-lru" ]
+    command: [ "redis-server", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no", "--stop-writes-on-bgsave-error", "no" ]
     restart: unless-stopped

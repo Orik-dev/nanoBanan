@@ -177,7 +177,7 @@ async def runblob_callback(req: Request):
             if status == "completed":
                 if not result_urls:
                     await _clear_wait_and_reset(bot, user.chat_id, back_to="auto")
-                    await safe_send_text(bot, user.chat_id, "Произошла ошибка. Команда уже разбирается.")
+                    await safe_send_text(bot, user.chat_id, "⚠️ Произошла ошибка.\nНапишите в поддержку: @guard_gpt")
                     await s.execute(update(Task).where(Task.id == task.id).values(delivered=True))
                     await s.commit()
                     log.info(json.dumps({"event": "webhook.completed.no_urls", "task_uuid": task_uuid}, ensure_ascii=False))
@@ -220,7 +220,7 @@ async def runblob_callback(req: Request):
 
                     if last_exc:
                         await _clear_wait_and_reset(bot, user.chat_id, back_to="auto")
-                        await safe_send_text(bot, user.chat_id, "Произошла ошибка. Команда уже разбирается.")
+                        await safe_send_text(bot, user.chat_id, "⚠️ Произошла ошибка.\nНапишите в поддержку: @guard_gpt")
                         await s.execute(update(Task).where(Task.id == task.id).values(delivered=True))
                         await s.commit()
                         log.warning(json.dumps({"event": "webhook.download_failed", "task_uuid": task_uuid}, ensure_ascii=False))
