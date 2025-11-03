@@ -56,7 +56,7 @@ def kb_aspect_ratio_selector() -> InlineKeyboardMarkup:
     # ])
     
     # Кнопка "Пропустить" (использовать по умолчанию)
-    buttons.append([InlineKeyboardButton(text="⏩ Пропустить (авто)", callback_data="ar_skip")])
+    buttons.append([InlineKeyboardButton(text="⏩ Пропустить", callback_data="ar_skip")])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

@@ -95,7 +95,8 @@ async def broadcast_send(ctx: dict[str, Any], job_id: str):
                             await bot.send_photo(
                                 chat_id, 
                                 photo=media_file_id, 
-                                caption=text, 
+                                caption=text,
+                                parse_mode="HTML",
                                 request_timeout=45
                             )
                         
@@ -104,13 +105,14 @@ async def broadcast_send(ctx: dict[str, Any], job_id: str):
                             await bot.send_video(
                                 chat_id, 
                                 video=media_file_id,  # ✅ Используем file_id
-                                caption=text, 
+                                caption=text,
+                                parse_mode="HTML",
                                 request_timeout=180
                             )
                         
                         # Текст
                         else:
-                            await bot.send_message(chat_id, text, request_timeout=15)
+                            await bot.send_message(chat_id, text,parse_mode="HTML", request_timeout=15)
                         
                         # Успех — сброс счётчика rate limit
                         if rate_limited_count > 0:
@@ -140,7 +142,7 @@ async def broadcast_send(ctx: dict[str, Any], job_id: str):
                             else:
                                 # Последняя попытка — fallback на текст
                                 try:
-                                    await bot.send_message(chat_id, text, request_timeout=15)
+                                    await bot.send_message(chat_id, text,parse_mode="HTML", request_timeout=15)
                                     return "fallback"
                                 except Exception:
                                     return "failed"
@@ -149,7 +151,7 @@ async def broadcast_send(ctx: dict[str, Any], job_id: str):
                         if attempt == 2:
                             log.warning(f"⚠️ BadRequest for {chat_id} after 3 attempts: {e}")
                             try:
-                                await bot.send_message(chat_id, text, request_timeout=15)
+                                await bot.send_message(chat_id, text,parse_mode="HTML", request_timeout=15)
                                 return "fallback"
                             except Exception:
                                 pass

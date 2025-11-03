@@ -579,4 +579,4 @@ async def send_generation_result(
         file_path=file_path,
         gen_started_at=None,
     )
-    await state.set_state(GenStates.final_menu) 
+    await state.set_state(GenStates.final_menu)

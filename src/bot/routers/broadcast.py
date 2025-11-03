@@ -202,16 +202,18 @@ async def cmd_broadcast_test(msg: Message):
             await msg.bot.send_photo(
                 msg.from_user.id, 
                 photo=media_file_id, 
-                caption=f"🧪 ТЕСТ:\n\n{payload}"
+                caption=f"🧪 ТЕСТ:\n\n{payload}",
+                parse_mode="HTML"
             )
         elif media_type == "video" and media_file_id:
             await msg.bot.send_video(
                 msg.from_user.id, 
                 video=media_file_id, 
-                caption=f"🧪 ТЕСТ:\n\n{payload}"
+                caption=f"🧪 ТЕСТ:\n\n{payload}",
+                parse_mode="HTML"
             )
         else:
-            await msg.answer(f"🧪 ТЕСТ:\n\n{payload}")
+            await msg.answer(f"🧪 ТЕСТ:\n\n{payload}",parse_mode="HTML")
         
         await msg.answer("✅ Тест отправлен!")
     except Exception as e:
