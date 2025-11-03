@@ -24,39 +24,19 @@ def validate_aspect_ratio(ar: str) -> bool:
 def kb_aspect_ratio_selector() -> InlineKeyboardMarkup:
     """Клавиатура выбора соотношения сторон"""
     buttons = []
+    
+    # ✅ Вертикальное
     buttons.append([
         InlineKeyboardButton(text="📱 Вертикальное (9:16)", callback_data="ar_9:16"),
-        # InlineKeyboardButton(text="3:4", callback_data="ar_3:4"),
     ])
-    # Landscape
-    # buttons.append([InlineKeyboardButton(text="🖼 Landscape", callback_data="ar_header_landscape")])
+    
+    # ✅ Горизонтальное
     buttons.append([
-        # InlineKeyboardButton(text="21:9", callback_data="ar_21:9"),
         InlineKeyboardButton(text="🖼 Горизонтальное (16:9)", callback_data="ar_16:9"),
     ])
-    # buttons.append([
-    #     InlineKeyboardButton(text="4:3", callback_data="ar_4:3"),
-    #     InlineKeyboardButton(text="3:2", callback_data="ar_3:2"),
-    # ])
     
-    # # Square
-    # buttons.append([InlineKeyboardButton(text="⬛️ Square", callback_data="ar_header_square")])
-    # buttons.append([InlineKeyboardButton(text="1:1", callback_data="ar_1:1")])
-    
-    # Portrait
-    # buttons.append([InlineKeyboardButton(text="📱 Portrait", callback_data="ar_header_portrait")])
-   
-    # buttons.append([InlineKeyboardButton(text="2:3", callback_data="ar_2:3")])
-    
-    # # Flexible
-    # buttons.append([InlineKeyboardButton(text="🔄 Flexible", callback_data="ar_header_flexible")])
-    # buttons.append([
-    #     InlineKeyboardButton(text="5:4", callback_data="ar_5:4"),
-    #     InlineKeyboardButton(text="4:5", callback_data="ar_4:5"),
-    # ])
-    
-    # Кнопка "Пропустить" (использовать по умолчанию)
-    buttons.append([InlineKeyboardButton(text="⏩ Пропустить", callback_data="ar_skip")])
+    # ❌ УБРАЛИ кнопку "Пропустить"
+    # buttons.append([InlineKeyboardButton(text="⏩ Пропустить", callback_data="ar_skip")])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

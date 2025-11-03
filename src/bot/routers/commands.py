@@ -56,15 +56,15 @@ async def cmd_create(m: Message, state: FSMContext):
 async def handle_create_aspect_ratio(c: CallbackQuery, state: FSMContext):
     ar = c.data.replace("ar_", "")
     
-    if ar == "skip":
-        ar = None  # автоматически
-    elif ar.startswith("header_"):
+    # ❌ УБРАЛИ обработку "skip" - теперь пользователь ОБЯЗАН выбрать
+    if ar.startswith("header_"):
         await safe_answer(c)
         return  # заголовки не кликабельны
     elif not validate_aspect_ratio(ar):
         await safe_answer(c, "❌ Неверное соотношение")
         return
     
+    # ✅ Сохраняем выбранное соотношение
     await state.update_data(aspect_ratio=ar)
     await state.set_state(CreateStates.waiting_prompt)
     await safe_edit_text(c.message, "Введите промт для генерации изображения:")
