@@ -58,7 +58,8 @@ class RunBlobClient:
         prompt: str,
         images: Optional[List[Dict[str, Any]]] = None,
         callback_url: Optional[str] = None,
-        aspect_ratio: Optional[str] = None,# FIX: строго по документации
+        aspect_ratio: Optional[str] = None,
+        seed: Optional[int] = None,
         *,
         cid: Optional[str] = None,
     ) -> str:
@@ -69,6 +70,8 @@ class RunBlobClient:
         payload: Dict[str, Any] = {"prompt": prompt}
         if aspect_ratio:
             payload["ar"] = aspect_ratio
+        if seed is not None:  # ✅ ДОБАВЛЕНО
+            payload["seed"] = seed    
         if images:
             payload["images"] = images  # [{"bytes":"<b64>", "mime":"image/jpeg"}]
         if callback_url:
@@ -80,6 +83,7 @@ class RunBlobClient:
                 cid=cid,
                 prompt_len=len(prompt),
                 images_meta=_summarize_images_for_log(images or []),
+                seed=seed,
                 has_callback=bool(callback_url),
             )
         )
