@@ -80,7 +80,7 @@ async def cleanup_old_temp_files():
     deleted = 0
     
     try:
-        for file_path in temp_dir.glob("*.png"):
+        for file_path in temp_dir.glob("*.png"):  # ✅ Удаляем только .png
             try:
                 file_age = now - file_path.stat().st_mtime
                 

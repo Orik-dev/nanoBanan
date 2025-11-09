@@ -1,19 +1,3 @@
-# import os
-# from core.logging import configure_json_logging
-# bind = "0.0.0.0:8000"
-# workers = int(os.getenv("GUNICORN_WORKERS", "4"))
-# threads = int(os.getenv("GUNICORN_THREADS", "4"))
-# worker_class = "uvicorn.workers.UvicornWorker"
-# timeout = 120
-# graceful_timeout = 30
-# keepalive = 5
-# accesslog = "-"
-# errorlog = "-"
-# loglevel = "info"
-# def post_fork(server, worker):
-#     configure_json_logging()
-
-
 import multiprocessing
 from core.logging import configure_json_logging
 

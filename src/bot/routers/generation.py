@@ -401,51 +401,31 @@ async def handle_final_menu_message(m: Message, state: FSMContext) -> None:
         prompt = prompt[:2000]
 
     data = await state.get_data()
-    last_result_file_id = data.get("last_result_file_id")
-    
-    if not last_result_file_id:
-        photos = data.get("photos") or []
-        
-        if photos:
-            file_ids = [p["file_id"] for p in photos]
-            
-            await state.set_state(GenStates.generating)
-            try:
-                wait_msg = await safe_send_text(m.bot, m.chat.id, "Генерирую…")
-                await state.update_data(
-                    prompt=prompt,
-                    mode="edit",
-                    wait_msg_id=getattr(wait_msg, "message_id", None),
-                    gen_started_at=int(time.time()),
-                )
-                await enqueue_generation(m.from_user.id, prompt, file_ids)
-                log.info(f"FSM_MIGRATION: chat_id={m.chat.id} - recovered from old structure")
-                return
-            except Exception:
-                await safe_send_text(m.bot, m.chat.id, "⚠️ Произошла ошибка.\nНапишите в поддержку: @guard_gpt")
-                return
-        
-        await state.clear()
-        await safe_send_text(
-            m.bot, m.chat.id,
-            "⚠️ Сессия устарела после обновления бота.\n\n"
-            "Начните заново:\n"
-            "🖼 /gen — редактировать фото\n"
-            "✨ /create — создать новое изображение"
-        )
-        log.warning(f"FSM_MIGRATION: chat_id={m.chat.id} - cleared old session (no data)")
+    photos: List[Dict[str, str]] = data.get("photos") or []
+    if not photos:
+        await safe_send_text(m.bot, m.chat.id, "Не удалось найти исходные изображения. Нажмите «Начать заново».")
         return
 
+    base_prompt = (data.get("base_prompt") or data.get("prompt") or "").strip()
+    edits = list(data.get("edits") or [])
+    edits.append(prompt)
+    cumulative_prompt = " ".join([base_prompt] + edits).strip()
+    if len(cumulative_prompt) > 4000:
+        cumulative_prompt = cumulative_prompt[:4000]
+
+    file_ids = [p["file_id"] for p in photos]
     await state.set_state(GenStates.generating)
     try:
         wait_msg = await safe_send_text(m.bot, m.chat.id, "Генерирую…")
         await state.update_data(
-            prompt=prompt,
+            prompt=cumulative_prompt,
+            base_prompt=base_prompt,
+            edits=edits,
             mode="edit",
             wait_msg_id=getattr(wait_msg, "message_id", None),
             gen_started_at=int(time.time()),
         )
-        await enqueue_generation(m.from_user.id, prompt, [last_result_file_id])
+        await enqueue_generation(m.from_user.id, cumulative_prompt, file_ids)
     except Exception:
         await safe_send_text(m.bot, m.chat.id, "⚠️ Произошла ошибка.\nНапишите в поддержку: @guard_gpt")
 
@@ -462,33 +442,18 @@ async def regenerate(c: CallbackQuery, state: FSMContext) -> None:
     await safe_answer(c)
     data = await state.get_data()
     prompt = data.get("prompt")
-    last_result_file_id = data.get("last_result_file_id")
-    
-    if not last_result_file_id:
-        photos = data.get("photos") or []
-        if photos:
-            file_ids = [p["file_id"] for p in photos]
-            try:
-                await safe_send_text(c.bot, c.message.chat.id, "Генерирую…")
-                await enqueue_generation(c.from_user.id, prompt or "повтори", file_ids)
-                log.info(f"FSM_MIGRATION: regenerate recovered from old structure, chat_id={c.from_user.id}")
-                return
-            except Exception:
-                pass
-        
-        await state.clear()
-        await safe_send_text(
-            c.bot, c.message.chat.id, 
-            "⚠️ Сессия устарела.\nНачните заново: /gen или /create"
-        )
-        return
-    
-    if not (prompt and last_result_file_id):
+    photos: List[Dict[str, str]] = data.get("photos")
+    if not (prompt and photos):
         await safe_send_text(c.bot, c.message.chat.id, "⚠️ Произошла ошибка.\nНапишите в поддержку: @guard_gpt")
         return
     try:
-        await safe_send_text(c.bot, c.message.chat.id, "Генерирую…")
-        await enqueue_generation(c.from_user.id, prompt, [last_result_file_id])
+        wait_msg = await safe_send_text(c.bot, c.message.chat.id, "Генерирую…")
+        await state.update_data(
+            wait_msg_id=getattr(wait_msg, "message_id", None),
+            gen_started_at=int(time.time()),
+        )
+        file_ids = [p["file_id"] for p in photos]
+        await enqueue_generation(c.from_user.id, prompt, file_ids)
     except Exception:
         await safe_send_text(c.bot, c.message.chat.id, "⚠️ Произошла ошибка.\nНапишите в поддержку: @guard_gpt")
 
@@ -589,11 +554,18 @@ async def send_generation_result(
     if result_msg and result_msg.photo:
         result_file_id = result_msg.photo[-1].file_id
 
+    photos = data.get("photos", [])
+    base_prompt = data.get("base_prompt") or prompt
+    edits = data.get("edits") or []
+    
     await state.clear()
     await state.set_state(GenStates.final_menu)
     await state.update_data(
         mode="edit",
         prompt=prompt,
+        base_prompt=base_prompt,
+        edits=edits,
+        photos=photos,
         last_result_file_id=result_file_id,
         file_path=file_path,
     )
