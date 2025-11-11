@@ -60,14 +60,20 @@ class RateLimitMiddleware(BaseMiddleware):
         self.limit = limit_per_min
 
     async def __call__(self, handler, event: Message, data):
-        key = f"rl:{event.from_user.id}"
-        count = await self.redis.incr(key)
-        if count == 1:
-            await self.redis.expire(key, 60)
-        if count > self.limit:
-            try:
-                await event.answer("Слишком много запросов. Попробуйте через минуту.")
-            except (TelegramForbiddenError, TelegramBadRequest):
-                pass
-            return
+        try:
+            key = f"rl:{event.from_user.id}"
+            count = await self.redis.incr(key)
+            if count == 1:
+                await self.redis.expire(key, 60)
+            if count > self.limit:
+                try:
+                    await event.answer("Слишком много запросов. Попробуйте через минуту.")
+                except (TelegramForbiddenError, TelegramBadRequest):
+                    pass
+                return
+        except Exception:
+            # ✅ ЕСЛИ REDIS УПАЛ - ПРОПУСКАЕМ БЕЗ RATE LIMIT
+            logger.warning(f"Rate limit Redis error for user {event.from_user.id}")  # ✅ ИСПРАВЛЕНО: log → logger
+            pass
+        
         return await handler(event, data)

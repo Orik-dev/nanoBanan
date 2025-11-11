@@ -1,6 +1,6 @@
-# import logging
-# import json
-# import sys
+import logging
+import json
+import sys
 
 # def configure_json_logging():
 #     class JsonFormatter(logging.Formatter):
@@ -19,10 +19,14 @@
 #     root = logging.getLogger()
 #     root.handlers = [h]
 #     root.setLevel(logging.INFO)
+    
+#     # 🔇 ДОБАВЛЕНО: Отключаем шумные INFO логи (WARNING и ERROR всё равно пишутся!)
+#     logging.getLogger("aiogram.event").setLevel(logging.WARNING)      # "Update id=X is handled"
+#     logging.getLogger("httpx").setLevel(logging.WARNING)              # "HTTP Request: GET/POST"
+#     logging.getLogger("httpcore").setLevel(logging.WARNING)           # HTTP core logs
+#     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)     # "POST /tg/webhook HTTP/1.1 200"
+#     logging.getLogger("hpack").setLevel(logging.WARNING)              # HTTP/2 logs
 
-import logging
-import json
-import sys
 
 def configure_json_logging():
     class JsonFormatter(logging.Formatter):
@@ -36,15 +40,22 @@ def configure_json_logging():
             if record.exc_info:
                 d["exc"] = self.formatException(record.exc_info)
             return json.dumps(d, ensure_ascii=False)
+    
     h = logging.StreamHandler(sys.stdout)
     h.setFormatter(JsonFormatter())
     root = logging.getLogger()
     root.handlers = [h]
-    root.setLevel(logging.INFO)
     
-    # 🔇 ДОБАВЛЕНО: Отключаем шумные INFO логи (WARNING и ERROR всё равно пишутся!)
-    logging.getLogger("aiogram.event").setLevel(logging.WARNING)      # "Update id=X is handled"
-    logging.getLogger("httpx").setLevel(logging.WARNING)              # "HTTP Request: GET/POST"
-    logging.getLogger("httpcore").setLevel(logging.WARNING)           # HTTP core logs
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)     # "POST /tg/webhook HTTP/1.1 200"
-    logging.getLogger("hpack").setLevel(logging.WARNING)              # HTTP/2 logs
+    # ✅ ИЗМЕНЕНО: WARNING вместо INFO для production
+    root.setLevel(logging.WARNING)
+    
+    # 🔇 Отключаем шумные логи (оставляем как есть)
+    logging.getLogger("aiogram.event").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("hpack").setLevel(logging.WARNING)
+    
+    # ✅ ДОБАВЛЕНО: Отключаем INFO логи ARQ worker'ов
+    logging.getLogger("arq.worker").setLevel(logging.WARNING)
+    logging.getLogger("arq.jobs").setLevel(logging.WARNING)

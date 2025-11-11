@@ -92,29 +92,32 @@ async def _clear_wait_and_reset(bot, chat_id: int, *, back_to: str = "auto") -> 
       • иначе -> ждём промт для правок
     """
     r = aioredis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB_FSM)
-    storage = RedisStorage(redis=r, key_builder=DefaultKeyBuilder(with_bot_id=True))
-    me = await bot.get_me()
-    fsm = FSMContext(storage=storage, key=StorageKey(me.id, chat_id, chat_id))
+    try:
+        storage = RedisStorage(redis=r, key_builder=DefaultKeyBuilder(with_bot_id=True))
+        me = await bot.get_me()
+        fsm = FSMContext(storage=storage, key=StorageKey(me.id, chat_id, chat_id))
 
-    data = await fsm.get_data()
-    wait_id = data.get("wait_msg_id")
-    if wait_id:
-        try:
-            await bot.delete_message(chat_id, wait_id)
-        except Exception:
-            pass
-        await fsm.update_data(wait_msg_id=None)
+        data = await fsm.get_data()
+        wait_id = data.get("wait_msg_id")
+        if wait_id:
+            try:
+                await bot.delete_message(chat_id, wait_id)
+            except Exception:
+                pass
+            await fsm.update_data(wait_msg_id=None)
 
-    mode = (data.get("mode") or "").lower()
-    target = back_to
-    if target == "auto":
-        target = "create" if mode == "create" else "edit"
+        mode = (data.get("mode") or "").lower()
+        target = back_to
+        if target == "auto":
+            target = "create" if mode == "create" else "edit"
 
-    if target == "create":
-        await fsm.update_data(mode="create", edits=[], photos=[])
-        await fsm.set_state(CreateStates.waiting_prompt)
-    else:
-        await fsm.set_state(GenStates.waiting_prompt)
+        if target == "create":
+            await fsm.update_data(mode="create", edits=[], photos=[])
+            await fsm.set_state(CreateStates.waiting_prompt)
+        else:
+            await fsm.set_state(GenStates.waiting_prompt)
+    finally:
+        await r.aclose()
 
 # -------------------- webhook --------------------
 
@@ -128,11 +131,11 @@ async def runblob_callback(req: Request):
         return JSONResponse({"ok": False, "error": "invalid_json"}, status_code=400)
 
     # 2) лог заголовка
-    log.info(json.dumps({
-        "event": "webhook.hit",
-        "keys": list(payload.keys()),
-        "raw_len": len(json.dumps(payload, ensure_ascii=False)),
-    }, ensure_ascii=False))
+    # log.info(json.dumps({
+    #     "event": "webhook.hit",
+    #     "keys": list(payload.keys()),
+    #     "raw_len": len(json.dumps(payload, ensure_ascii=False)),
+    # }, ensure_ascii=False))
 
     # 3) нормализация
     task_uuid = payload.get("task_uuid") or payload.get("task_id") or payload.get("id")
@@ -230,7 +233,7 @@ async def runblob_callback(req: Request):
                 await send_generation_result(user.chat_id, task_uuid, task.prompt, image_url, local_path, bot)
                 await s.execute(update(Task).where(Task.id == task.id).values(delivered=True))
                 await s.commit()
-                log.info(json.dumps({"event": "webhook.completed.sent", "task_uuid": task_uuid}, ensure_ascii=False))
+                # log.info(json.dumps({"event": "webhook.completed.sent", "task_uuid": task_uuid}, ensure_ascii=False))
                 return JSONResponse({"ok": True})
 
             # ---- MODERATION ----
@@ -261,7 +264,7 @@ async def runblob_callback(req: Request):
             await safe_send_text(
                 bot,
                 user.chat_id,
-                "⚠️ Не удалось сгенерировать изображение. Измените фото или промт и попробуйте снова: /gen",
+                    "⚠️ Не удалось сгенерировать изображение. Попробуйте снова чуть позже: /gen",
             )
             await s.execute(update(Task).where(Task.id == task.id).values(delivered=True))
             await s.commit()

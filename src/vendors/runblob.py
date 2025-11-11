@@ -77,16 +77,16 @@ class RunBlobClient:
         if callback_url:
             payload["callback_url"] = callback_url  # FIX
 
-        log.info(
-            _j(
-                "runblob.create_task.request",
-                cid=cid,
-                prompt_len=len(prompt),
-                images_meta=_summarize_images_for_log(images or []),
-                seed=seed,
-                has_callback=bool(callback_url),
-            )
-        )
+        # log.info(
+        #     _j(
+        #         "runblob.create_task.request",
+        #         cid=cid,
+        #         prompt_len=len(prompt),
+        #         images_meta=_summarize_images_for_log(images or []),
+        #         seed=seed,
+        #         has_callback=bool(callback_url),
+        #     )
+        # )
 
         r = await self._client.post(self.generate_url, headers=self.common_hdr, json=payload)
         if r.status_code == 401:
@@ -118,7 +118,7 @@ class RunBlobClient:
             log.error(_j("runblob.create_task.no_task_id", cid=cid, data=str(data)[:500]))
             raise RunBlobError(f"No task id in response: {data}")
 
-        log.info(_j("runblob.create_task.ok", cid=cid, task_uuid=task_uuid))
+        # log.info(_j("runblob.create_task.ok", cid=cid, task_uuid=task_uuid))
         return task_uuid
 
     @retry(
@@ -142,7 +142,7 @@ class RunBlobClient:
         r.raise_for_status()
         data = r.json()
         status = str(data.get("status", "")).lower()
-        log.info(_j("runblob.get_status.ok", cid=cid, task_uuid=task_uuid, status=status))
+        # log.info(_j("runblob.get_status.ok", cid=cid, task_uuid=task_uuid, status=status))
         return data
 
     async def wait_until_done(self, task_uuid: str, timeout_s: int, *, cid: Optional[str] = None) -> Dict[str, Any]:
@@ -153,7 +153,7 @@ class RunBlobClient:
             data = await self.get_status(task_uuid, cid=cid)
             status = str(data.get("status", "")).lower()
             if status in terminal or not status:
-                log.info(_j("runblob.done", cid=cid, task_uuid=task_uuid, final_status=status))
+                # log.info(_j("runblob.done", cid=cid, task_uuid=task_uuid, final_status=status))
                 return data
             await asyncio.sleep(poll)
             poll = min(poll + 0.5, 6.0)

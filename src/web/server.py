@@ -10,6 +10,7 @@ from aiogram.exceptions import TelegramRetryAfter
 import logging
 from core.config import settings
 from core.logging import configure_json_logging
+from redis.asyncio.connection import ConnectionPool
 
 from bot.middlewares import ErrorLoggingMiddleware, RateLimitMiddleware
 from bot.routers import commands as r_cmd
@@ -30,7 +31,6 @@ from bot.routers import broadcast as r_broadcast
 async def migrate_fsm_states():
     """
     Очищает FSM состояния, которые несовместимы с новой версией.
-    Логика: если пользователь в final_menu без last_result_file_id - очистить.
     """
     r = redis.Redis(
         host=settings.REDIS_HOST, 
@@ -42,25 +42,28 @@ async def migrate_fsm_states():
         log = logging.getLogger("migration")
         cleaned = 0
         checked = 0
+        max_check = 1000  # ✅ ОГРАНИЧИВАЕМ КОЛИЧЕСТВО
         
-        # Сканируем все FSM ключи состояний
         cursor = 0
         while True:
             cursor, keys = await r.scan(cursor, match="fsm:*:state", count=100)
             
             for state_key in keys:
                 checked += 1
+                
+                # ✅ ОГРАНИЧЕНИЕ - НЕ ПРОВЕРЯЕМ БОЛЬШЕ 1000 КЛЮЧЕЙ
+                if checked > max_check:
+                    log.warning(f"⚠️ FSM migration stopped at {max_check} keys (too many)")
+                    return
+                
                 try:
-                    # Читаем состояние
                     state_value = await r.get(state_key)
                     if not state_value:
                         continue
                     
                     state_str = state_value.decode('utf-8')
                     
-                    # ✅ Ищем пользователей в final_menu или generating
                     if "final_menu" in state_str or "generating" in state_str:
-                        # Получаем data ключ
                         data_key = state_key.decode('utf-8').replace(':state', ':data')
                         data_value = await r.get(data_key)
                         
@@ -69,13 +72,10 @@ async def migrate_fsm_states():
                             try:
                                 data = json.loads(data_value)
                                 
-                                # ❌ Если нет last_result_file_id - это старая сессия
                                 if not data.get("last_result_file_id") and "final_menu" in state_str:
-                                    # Очищаем состояние
                                     await r.delete(state_key)
                                     await r.delete(data_key)
                                     cleaned += 1
-                                    log.info(f"Cleaned old FSM session: {state_key.decode('utf-8')}")
                             except json.JSONDecodeError:
                                 pass
                 
@@ -98,8 +98,20 @@ app = FastAPI(title="NanoBanana", version="1.0.0")
 
 bot = Bot(token=settings.TELEGRAM_BOT_TOKEN,
           default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-redis_fsm = redis.from_url(f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB_FSM}")
+
+
+redis_pool = ConnectionPool(
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB_FSM,
+    max_connections=200,        # увеличено с 50
+    decode_responses=False,
+)
+
+redis_fsm = redis.Redis(connection_pool=redis_pool)
 storage = RedisStorage(redis=redis_fsm, key_builder=DefaultKeyBuilder(with_bot_id=True))
+# redis_fsm = redis.from_url(f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB_FSM}")
+# storage = RedisStorage(redis=redis_fsm, key_builder=DefaultKeyBuilder(with_bot_id=True))
 dp = Dispatcher(storage=storage)
 
 # include routers

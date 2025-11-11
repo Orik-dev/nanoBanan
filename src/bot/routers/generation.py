@@ -198,11 +198,15 @@ def _is_image_document(msg: Message) -> bool:
     return False
 
 
+# def _cancel_debounce(chat_id: int) -> None:
+#     task = _DEBOUNCE_TASKS.pop(chat_id, None)
+#     if task and not task.done():
+#         task.cancel()
+
 def _cancel_debounce(chat_id: int) -> None:
-    task = _DEBOUNCE_TASKS.pop(chat_id, None)
+    task = _DEBOUNCE_TASKS.pop(chat_id, None)  # pop - хорошо
     if task and not task.done():
         task.cancel()
-
 
 async def _finalize_to_prompt(m: Message, state: FSMContext) -> None:
     _cancel_debounce(m.chat.id)
@@ -233,6 +237,8 @@ def _schedule_album_finalize(m: Message, state: FSMContext, delay: float = 2.0):
             await _finalize_to_prompt(m, state)
         except asyncio.CancelledError:
             return
+        finally:
+            _DEBOUNCE_TASKS.pop(m.chat.id, None)
 
     _cancel_debounce(m.chat.id)
     _DEBOUNCE_TASKS[m.chat.id] = asyncio.create_task(_debounce())
@@ -497,75 +503,80 @@ async def send_generation_result(
     import redis.asyncio as redis
 
     redis_cli = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB_FSM)
-    storage = RedisStorage(redis=redis_cli, key_builder=DefaultKeyBuilder(with_bot_id=True))
-    bot_info = await bot.get_me()
-    state = FSMContext(storage=storage, key=StorageKey(bot_info.id, chat_id, chat_id))
+    
+    try:
+        storage = RedisStorage(redis=redis_cli, key_builder=DefaultKeyBuilder(with_bot_id=True))
+        bot_info = await bot.get_me()
+        state = FSMContext(storage=storage, key=StorageKey(bot_info.id, chat_id, chat_id))
 
-    data = await state.get_data()
-    wait_msg_id = data.get("wait_msg_id")
-    if wait_msg_id:
-        try:
-            await bot.delete_message(chat_id, wait_msg_id)
-        except Exception:
-            pass
+        data = await state.get_data()
+        wait_msg_id = data.get("wait_msg_id")
+        if wait_msg_id:
+            try:
+                await bot.delete_message(chat_id, wait_msg_id)
+            except Exception:
+                pass
 
-    mode = (data.get("mode") or "edit").lower().strip()
+        mode = (data.get("mode") or "edit").lower().strip()
 
-    if file_path and os.path.exists(file_path):
-        await safe_send_document(
-            bot,
-            chat_id,
-            file_path,
-            caption="Скачать файлом — качество будет лучше, чем при просмотре здесь"
-        )
+        if file_path and os.path.exists(file_path):
+            await safe_send_document(
+                bot,
+                chat_id,
+                file_path,
+                caption="Скачать файлом — качество будет лучше, чем при просмотре здесь"
+            )
 
-    if mode == "create":
+        if mode == "create":
+            result_msg = await safe_send_photo(
+                bot,
+                chat_id,
+                image_url,
+                caption="Готово ✅ Напишите новый промт, чтобы сгенерировать ещё.",
+                reply_markup=None,
+            )
+            
+            result_file_id = None
+            if result_msg and result_msg.photo:
+                result_file_id = result_msg.photo[-1].file_id
+            
+            await state.clear()
+            await state.set_state(CreateStates.waiting_prompt)
+            await state.update_data(
+                mode="create",
+                prompt=prompt,
+                last_result_file_id=result_file_id,
+                file_path=file_path,
+            )
+            return
+
         result_msg = await safe_send_photo(
             bot,
             chat_id,
             image_url,
-            caption="Готово ✅ Напишите новый промт, чтобы сгенерировать ещё.",
-            reply_markup=None,
+            caption="<b>Если хотите что-то изменить или добавить напишите в чат ⬇️</b>",
+            reply_markup=kb_final_result(),
         )
-        
+
         result_file_id = None
         if result_msg and result_msg.photo:
             result_file_id = result_msg.photo[-1].file_id
+
+        photos = data.get("photos", [])
+        base_prompt = data.get("base_prompt") or prompt
+        edits = data.get("edits") or []
         
         await state.clear()
-        await state.set_state(CreateStates.waiting_prompt)
+        await state.set_state(GenStates.final_menu)
         await state.update_data(
-            mode="create",
+            mode="edit",
             prompt=prompt,
+            base_prompt=base_prompt,
+            edits=edits,
+            photos=photos,
             last_result_file_id=result_file_id,
             file_path=file_path,
         )
-        return
-
-    result_msg = await safe_send_photo(
-        bot,
-        chat_id,
-        image_url,
-        caption="<b>Если хотите что-то изменить или добавить напишите в чат ⬇️</b>",
-        reply_markup=kb_final_result(),
-    )
-
-    result_file_id = None
-    if result_msg and result_msg.photo:
-        result_file_id = result_msg.photo[-1].file_id
-
-    photos = data.get("photos", [])
-    base_prompt = data.get("base_prompt") or prompt
-    edits = data.get("edits") or []
     
-    await state.clear()
-    await state.set_state(GenStates.final_menu)
-    await state.update_data(
-        mode="edit",
-        prompt=prompt,
-        base_prompt=base_prompt,
-        edits=edits,
-        photos=photos,
-        last_result_file_id=result_file_id,
-        file_path=file_path,
-    )
+    finally:
+        await redis_cli.aclose()

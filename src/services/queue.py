@@ -57,7 +57,7 @@ async def _tg_file_to_image_dict(bot: Bot, file_id: str, *, cid: str) -> Dict[st
 
     size = len(content)
     sha = hashlib.sha256(content).hexdigest()
-    log.info(_j("queue.fetch_tg_file.ok", cid=cid, file_path=f.file_path, mime=mime, size=size, sha256=sha))
+    # log.info(_j("queue.fetch_tg_file.ok", cid=cid, file_path=f.file_path, mime=mime, size=size, sha256=sha))
 
     ALLOWED_MIMES = {"image/png", "image/jpeg", "image/webp"}
     MAX_BYTES = 7 * 1024 * 1024
@@ -91,14 +91,27 @@ async def startup(ctx: dict[str, Bot]):
 
 
 async def shutdown(ctx: dict[str, Bot]):
+    """Graceful shutdown - закрываем все соединения"""
     bot: Bot = ctx.get("bot")
     if bot:
         await bot.session.close()
+    
+    # ✅ Закрываем все Redis клиенты
+    try:
+        import gc
+        for obj in gc.get_objects():
+            if isinstance(obj, aioredis.Redis):
+                try:
+                    await obj.aclose()
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 async def _clear_waiting_message(bot: Bot, chat_id: int) -> None:
+    r = aioredis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB_FSM)
     try:
-        r = aioredis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB_FSM)
         storage = RedisStorage(redis=r, key_builder=DefaultKeyBuilder(with_bot_id=True))
         me = await bot.get_me()
         fsm = FSMContext(storage=storage, key=StorageKey(me.id, chat_id, chat_id))
@@ -112,6 +125,9 @@ async def _clear_waiting_message(bot: Bot, chat_id: int) -> None:
             await fsm.update_data(wait_msg_id=None)
     except Exception:
         pass
+    finally:
+        await r.aclose()
+
 
 
 async def _maybe_refund_if_deducted(chat_id: int, task_uuid: str, amount: int, cid: str, reason: str) -> None:
@@ -153,16 +169,6 @@ async def process_generation(
     api = RunBlobClient()
     cid = uuid4().hex[:12]
 
-    log.info(
-        _j(
-            "queue.process.start",
-            cid=cid,
-            chat_id=chat_id,
-            photos_in=len(photos or []),
-            prompt_len=len(prompt or ""),
-        )
-    )
-
     try:
         async with SessionLocal() as s:
             try:
@@ -186,7 +192,6 @@ async def process_generation(
 
             if user.balance_credits < CREDITS_PER_GENERATION:
                 await bot.send_message(chat_id, "Недостаточно генераций. /buy")
-                log.info(_j("queue.balance.insufficient", cid=cid, balance=user.balance_credits))
                 return {"ok": False, "error": "insufficient_credits"}
 
             images: List[Dict[str, Any]] = []
@@ -195,7 +200,6 @@ async def process_generation(
                     images.append(await _tg_file_to_image_dict(bot, fid, cid=cid))
                 except Exception:
                     log.exception(_j("queue.fetch_image.failed", cid=cid, file_id=fid))
-            log.info(_j("queue.images.built", cid=cid, count=len(images)))
 
             had_input_photos = bool(photos)
             if had_input_photos and not images:
@@ -223,8 +227,6 @@ async def process_generation(
                 except Exception:
                     pass
                 return {"ok": False, "error": f"runblob_http_{code or 'unknown'}"}
-
-            log.info(_j("queue.create_task.ok", cid=cid, task_uuid=task_uuid))
 
             try:
                 task = Task(user_id=user.id, prompt=prompt, task_uuid=task_uuid, status="queued", delivered=False)
@@ -261,6 +263,9 @@ async def process_generation(
         except Exception:
             pass
         return {"ok": False, "error": "internal"}
+    
+    finally:
+        await api.aclose()
 
 
 class WorkerSettings:

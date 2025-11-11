@@ -9,12 +9,12 @@ engine = create_async_engine(
     settings.DB_DSN,
     pool_pre_ping=True,
     pool_recycle=180,          
-    pool_size=15,
-    pool_timeout=2,
+    pool_size=30,
+    pool_timeout=10,
     pool_use_lifo=True,
-    max_overflow=45,
+    max_overflow=70,
     connect_args={
-        "connect_timeout": 3,  # не висеть долго на TCP connect
+        "connect_timeout": 5,  # не висеть долго на TCP connect
     },
 )
 
