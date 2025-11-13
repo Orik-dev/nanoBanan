@@ -79,11 +79,8 @@ async def broadcast_send(ctx: dict[str, Any], job_id: str):
         cancelled = False
 
         async def _send(chat_id: int, text: str, media_type: str | None, 
-                       media_file_id: str | None, media_file_path: str | None) -> str:
-            """
-            Отправка с retry и адаптивным rate limiting.
-            Возвращает: 'success', 'fallback', 'failed'
-            """
+               media_file_id: str | None, media_file_path: str | None) -> str:
+   
             nonlocal current_rps, rate_limited_count
             
             await tokens.get()
@@ -100,11 +97,11 @@ async def broadcast_send(ctx: dict[str, Any], job_id: str):
                                 request_timeout=45
                             )
                         
-                        # 🔧 ВИДЕО через file_id (БЕЗ файла)
+                        # 🔧 ВИДЕО через file_id
                         elif media_type == "video" and media_file_id:
                             await bot.send_video(
                                 chat_id, 
-                                video=media_file_id,  # ✅ Используем file_id
+                                video=media_file_id,
                                 caption=text,
                                 parse_mode="HTML",
                                 request_timeout=180
@@ -112,7 +109,12 @@ async def broadcast_send(ctx: dict[str, Any], job_id: str):
                         
                         # Текст
                         else:
-                            await bot.send_message(chat_id, text,parse_mode="HTML", request_timeout=15)
+                            await bot.send_message(
+                                chat_id, 
+                                text,
+                                parse_mode="HTML", 
+                                request_timeout=15
+                            )
                         
                         # Успех — сброс счётчика rate limit
                         if rate_limited_count > 0:
@@ -123,7 +125,7 @@ async def broadcast_send(ctx: dict[str, Any], job_id: str):
                     except TelegramBadRequest as e:
                         error_msg = str(e).lower()
                         
-                        # Обработка TooManyRequests
+                        # ✅ 1. Обработка rate limit
                         if "too many requests" in error_msg or "retry after" in error_msg:
                             import re
                             match = re.search(r'retry after (\d+)', error_msg)
@@ -136,37 +138,41 @@ async def broadcast_send(ctx: dict[str, Any], job_id: str):
                                 log.warning(f"🐌 Slowing down: RPS={current_rps:.1f}")
                             
                             if attempt < 2:
-                                log.debug(f"⏳ Rate limit for {chat_id}, waiting {wait_time}s (attempt {attempt+1}/3)")
+                                log.debug(f"⏳ Rate limit for {chat_id}, waiting {wait_time}s")
                                 await asyncio.sleep(wait_time)
-                                continue
-                            else:
-                                # Последняя попытка — fallback на текст
-                                try:
-                                    await bot.send_message(chat_id, text,parse_mode="HTML", request_timeout=15)
-                                    return "fallback"
-                                except Exception:
-                                    return "failed"
+                                continue  # Повторить попытку
                         
-                        # Другие BadRequest ошибки
+                        # ✅ 2. Если это последняя попытка - fallback на текст
                         if attempt == 2:
-                            log.warning(f"⚠️ BadRequest for {chat_id} after 3 attempts: {e}")
+                            log.warning(f"⚠️ BadRequest for {chat_id}: {str(e)[:100]}")
                             try:
-                                await bot.send_message(chat_id, text,parse_mode="HTML", request_timeout=15)
+                                # Пробуем отправить только текст
+                                await bot.send_message(
+                                    chat_id, 
+                                    text,
+                                    parse_mode="HTML", 
+                                    request_timeout=15
+                                )
                                 return "fallback"
+                            except TelegramForbiddenError:
+                                # ✅ Удаляем ТОЛЬКО при блокировке
+                                try:
+                                    async with SessionLocal() as s2:
+                                        await s2.execute(delete(User).where(User.chat_id == chat_id))
+                                        await s2.commit()
+                                except Exception:
+                                    pass
+                                return "failed"
                             except Exception:
-                                pass
-                            
-                            # Удалить пользователя (забанил бота)
-                            try:
-                                async with SessionLocal() as s2:
-                                    await s2.execute(delete(User).where(User.chat_id == chat_id))
-                                    await s2.commit()
-                            except Exception:
-                                pass
-                            return "failed"
+                                # Другие ошибки - просто failed БЕЗ удаления
+                                return "failed"
+                        
+                        # Если не последняя попытка - повторить
+                        await asyncio.sleep(2)
+                        continue
                     
                     except TelegramForbiddenError:
-                        # Пользователь забанил бота
+                        # ✅ Пользователь заблокировал бота - удаляем из БД
                         try:
                             async with SessionLocal() as s2:
                                 await s2.execute(delete(User).where(User.chat_id == chat_id))
@@ -188,7 +194,8 @@ async def broadcast_send(ctx: dict[str, Any], job_id: str):
                             await asyncio.sleep(5)
                             continue
                         
-                        log.error(f"❌ Unexpected error for {chat_id}: {e}")
+                        if attempt == 2:
+                            log.error(f"❌ Unexpected error for {chat_id}: {str(e)[:100]}")
                         return "failed"
                 
                 return "failed"

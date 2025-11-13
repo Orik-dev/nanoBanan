@@ -251,7 +251,7 @@ async def _accept_photo(m: Message, state: FSMContext, item: Dict[str, str]) -> 
     finalized: bool = data.get("finalized", False)
 
     if finalized:
-        await safe_send_text(m.bot, m.chat.id, "Изображения уже приняты. Чтобы заменить — нажмите «↩️ Назад».")
+        await safe_send_text(m.bot, m.chat.id, "Изображения уже приняты.")
         return
 
     # ✅ ИСПРАВЛЕНО: проверка ДО append
@@ -280,10 +280,10 @@ async def _accept_photo(m: Message, state: FSMContext, item: Dict[str, str]) -> 
             _schedule_album_finalize(m, state, delay=2.0)
             return
         else:
-            await safe_send_text(m.bot, m.chat.id, "Изображения уже приняты. Чтобы заменить — нажмите «↩️ Назад».")
+            await safe_send_text(m.bot, m.chat.id, "Изображения уже приняты.")
             return
 
-    await safe_send_text(m.bot, m.chat.id, "Изображения уже приняты. Чтобы заменить — нажмите «↩️ Назад».")
+    await safe_send_text(m.bot, m.chat.id, "Изображения уже приняты.")
     return
 
 

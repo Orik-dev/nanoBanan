@@ -4,12 +4,14 @@
 #   app:
 #     build: .
 #     env_file: .env
-#     # публикуем только на localhost, чтобы наружу не торчал :8000
 #     ports:
 #       - "127.0.0.1:8000:8000"
 #     depends_on:
 #       - redis
 #     restart: unless-stopped
+#     dns:
+#       - 8.8.8.8
+#       - 1.1.1.1
 #     healthcheck:
 #       test: [ "CMD", "curl", "-fsS", "http://localhost:8000/healthz" ]
 #       interval: 15s
@@ -23,33 +25,98 @@
 #     depends_on:
 #       - redis
 #     restart: unless-stopped
+#     dns:
+#       - 8.8.8.8
+#       - 1.1.1.1
 
 #   cleanup:
 #     build: .
 #     command: >
 #       sh -c " while true; do
 #         python cleanup_redis.py;
-#         sleep 3600;
+#         sleep 1800;
 #       done "
 #     env_file: .env
 #     depends_on:
 #       - redis
 #     restart: unless-stopped
-
-#   # arq-broadcast:
-#   #   build: .
-#   #   command: [ "arq", "services.broadcast.WorkerSettings" ]
-#   #   env_file: .env
-#   #   depends_on:
-#   #     - redis
-#   #   restart: unless-stopped
+#     dns:
+#       - 8.8.8.8
+#       - 1.1.1.1
 
 #   redis:
 #     image: redis:7-alpine
 #     command: [ "redis-server", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no", "--stop-writes-on-bgsave-error", "no" ]
 #     restart: unless-stopped
 
+# version: "3.9"
+
+# services:
+#   app:
+#     build: .
+#     env_file: .env
+#     ports:
+#       - "127.0.0.1:8000:8000"
+#     depends_on:
+#       - redis
+#     restart: unless-stopped
+#     dns:
+#       - 8.8.8.8
+#       - 1.1.1.1
+#     volumes:
+#       - shared-temp:/app/temp_inputs # ✅ ДОБАВЛЕНО
+#     healthcheck:
+#       test: [ "CMD", "curl", "-fsS", "http://localhost:8000/healthz" ]
+#       interval: 15s
+#       timeout: 3s
+#       retries: 5
+
+#   worker:
+#     build: .
+#     command: [ "arq", "services.queue.WorkerSettings" ]
+#     env_file: .env
+#     depends_on:
+#       - redis
+#     restart: unless-stopped
+#     dns:
+#       - 8.8.8.8
+#       - 1.1.1.1
+#     volumes:
+#       - shared-temp:/app/temp_inputs # ✅ ДОБАВЛЕНО
+
+#   cleanup:
+#     build: .
+#     command: >
+#       sh -c " while true; do
+#         python cleanup_redis.py;
+#         sleep 600;
+#       done "
+#     env_file: .env
+#     depends_on:
+#       - redis
+#     restart: unless-stopped
+#     dns:
+#       - 8.8.8.8
+#       - 1.1.1.1
+#     volumes:
+#       - shared-temp:/app/temp_inputs # ✅ ДОБАВЛЕНО
+
+#   redis:
+#     image: redis:7-alpine
+#     command: [ "redis-server", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no", "--stop-writes-on-bgsave-error", "no" ]
+#     restart: unless-stopped
+
+# volumes:
+#   shared-temp: # ✅ ДОБАВЛЕНО
+
 version: "3.9"
+
+# ✅ Общий блок для ротации логов
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   app:
@@ -63,6 +130,9 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
+    volumes:
+      - shared-temp:/app/temp_inputs
+    logging: *default-logging # ✅ ДОБАВЛЕНО
     healthcheck:
       test: [ "CMD", "curl", "-fsS", "http://localhost:8000/healthz" ]
       interval: 15s
@@ -79,13 +149,16 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
+    volumes:
+      - shared-temp:/app/temp_inputs
+    logging: *default-logging # ✅ ДОБАВЛЕНО
 
   cleanup:
     build: .
     command: >
       sh -c " while true; do
         python cleanup_redis.py;
-        sleep 3600;
+        sleep 600;
       done "
     env_file: .env
     depends_on:
@@ -94,8 +167,15 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
+    volumes:
+      - shared-temp:/app/temp_inputs
+    logging: *default-logging # ✅ ДОБАВЛЕНО
 
   redis:
     image: redis:7-alpine
     command: [ "redis-server", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no", "--stop-writes-on-bgsave-error", "no" ]
     restart: unless-stopped
+    logging: *default-logging # ✅ ДОБАВЛЕНО
+
+volumes:
+  shared-temp:

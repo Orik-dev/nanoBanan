@@ -157,6 +157,13 @@ app.include_router(rt_proxy.router)
 
 @app.on_event("startup")
 async def on_startup():
+    
+    
+    if settings.ADMIN_ID:
+        from core.telegram_logger import TelegramLogHandler
+        telegram_handler = TelegramLogHandler(bot, settings.ADMIN_ID)
+        logging.getLogger().addHandler(telegram_handler)
+        
     if settings.WEBHOOK_USE:
         try:
             await bot.set_webhook(

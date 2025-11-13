@@ -365,6 +365,11 @@ async def enqueue_generation(
 async def startup(ctx: dict[str, Bot]):
     ctx["bot"] = Bot(token=settings.TELEGRAM_BOT_TOKEN)
 
+    if settings.ADMIN_ID:
+        from core.telegram_logger import TelegramLogHandler
+        import logging
+        telegram_handler = TelegramLogHandler(ctx["bot"], settings.ADMIN_ID)
+        logging.getLogger().addHandler(telegram_handler)
 
 async def shutdown(ctx: dict[str, Bot]):
     """Graceful shutdown"""
@@ -442,6 +447,127 @@ async def _maybe_refund_if_deducted(
         log.exception(_j("refund.db_error", cid=cid, task_uuid=task_uuid))
 
 
+# async def process_generation(
+#     ctx: dict[str, Bot],
+#     chat_id: int,
+#     prompt: str,
+#     photos: List[str],
+#     aspect_ratio: Optional[str] = None
+# ) -> Dict[str, Any] | None:
+#     """
+#     Генерация через KIE AI
+#     """
+#     bot: Bot = ctx["bot"]
+#     api = KieClient()
+#     cid = uuid4().hex[:12]
+
+#     try:
+#         async with SessionLocal() as s:
+#             try:
+#                 q = await s.execute(select(User).where(User.chat_id == chat_id))
+#                 user = q.scalar_one_or_none()
+#                 if user is None:
+#                     await _clear_waiting_message(bot, chat_id)
+#                     try:
+#                         await bot.send_message(chat_id, "Нажмите /start для инициализации")
+#                     except Exception:
+#                         pass
+#                     log.warning(_j("queue.user_not_found", cid=cid, chat_id=chat_id))
+#                     return {"ok": False, "error": "user_not_found"}
+#             except OperationalError:
+#                 await _clear_waiting_message(bot, chat_id)
+#                 try:
+#                     await bot.send_message(chat_id, "⚠️ Ошибка БД. Напишите @guard_gpt")
+#                 except Exception:
+#                     pass
+#                 return {"ok": False, "error": "db_unavailable"}
+
+#             if user.balance_credits < CREDITS_PER_GENERATION:
+#                 await bot.send_message(chat_id, "Недостаточно генераций. /buy")
+#                 return {"ok": False, "error": "insufficient_credits"}
+
+#             # Конвертируем в публичные URL
+#             image_urls: List[str] = []
+#             for fid in (photos or [])[:5]:
+#                 try:
+#                     url = await _tg_file_to_public_url(bot, fid, cid=cid)
+#                     image_urls.append(url)
+#                 except Exception:
+#                     log.exception(_j("queue.fetch_image.failed", cid=cid, file_id=fid))
+
+#             had_input_photos = bool(photos)
+#             if had_input_photos and not image_urls:
+#                 await bot.send_message(
+#                     chat_id,
+#                     "Можно загрузить 1–5 изображений PNG/JPG/WebP, до 10 MB. Попробуйте снова 🙏",
+#                 )
+#                 return {"ok": False, "error": "images_download_failed"}
+
+#             try:
+#                 callback = f"{settings.PUBLIC_BASE_URL.rstrip('/')}/webhook/kie"
+#                 task_uuid = await api.create_task(
+#                     prompt,
+#                     image_urls=image_urls if image_urls else None,
+#                     callback_url=callback,
+#                     output_format=settings.KIE_OUTPUT_FORMAT,
+#                     image_size=aspect_ratio or settings.KIE_IMAGE_SIZE,
+#                     cid=cid,
+#                 )
+#             except httpx.HTTPError as e:
+#                 code = getattr(getattr(e, "response", None), "status_code", None)
+#                 log.warning(_j("queue.kie_http_error", cid=cid, status_code=code))
+#                 await _clear_waiting_message(bot, chat_id)
+#                 try:
+#                     await bot.send_message(chat_id, "⚠️ Ошибка генерации. Напишите @guard_gpt")
+#                 except Exception:
+#                     pass
+#                 return {"ok": False, "error": f"kie_http_{code or 'unknown'}"}
+
+#             try:
+#                 task = Task(
+#                     user_id=user.id,
+#                     prompt=prompt,
+#                     task_uuid=task_uuid,
+#                     status="queued",
+#                     delivered=False
+#                 )
+#                 s.add(task)
+#                 await s.commit()
+#                 await s.refresh(task)
+#             except Exception:
+#                 log.warning(_j("queue.db_write_failed", cid=cid, task_uuid=task_uuid))
+
+#         return {"ok": True, "task_uuid": task_uuid}
+
+#     except KieError as e:
+#         log.error(_j("queue.kie_error", cid=cid, err=str(e)[:500]))
+#         await _clear_waiting_message(bot, chat_id)
+#         if 'task_uuid' in locals():
+#             await _maybe_refund_if_deducted(chat_id, task_uuid, CREDITS_PER_GENERATION, cid, reason="kie_error")
+#         try:
+#             await bot.send_message(chat_id, "⚠️ Ошибка генерации. Напишите @guard_gpt")
+#         except Exception:
+#             pass
+#         return {"ok": False, "error": str(e)[:500]}
+
+#     except TelegramForbiddenError:
+#         log.warning(_j("queue.tg_forbidden_on_start", cid=cid, chat_id=chat_id))
+#         return {"ok": False, "error": "telegram_forbidden"}
+
+#     except Exception:
+#         log.exception(_j("queue.fatal", cid=cid))
+#         await _clear_waiting_message(bot, chat_id)
+#         if 'task_uuid' in locals():
+#             await _maybe_refund_if_deducted(chat_id, task_uuid, CREDITS_PER_GENERATION, cid, reason="internal")
+#         try:
+#             await bot.send_message(chat_id, "⚠️ Ошибка. Напишите @guard_gpt")
+#         except Exception:
+#             pass
+#         return {"ok": False, "error": "internal"}
+    
+#     finally:
+#         await api.aclose()
+
 async def process_generation(
     ctx: dict[str, Bot],
     chat_id: int,
@@ -449,9 +575,6 @@ async def process_generation(
     photos: List[str],
     aspect_ratio: Optional[str] = None
 ) -> Dict[str, Any] | None:
-    """
-    Генерация через KIE AI
-    """
     bot: Bot = ctx["bot"]
     api = KieClient()
     cid = uuid4().hex[:12]
@@ -481,21 +604,52 @@ async def process_generation(
                 await bot.send_message(chat_id, "Недостаточно генераций. /buy")
                 return {"ok": False, "error": "insufficient_credits"}
 
-            # Конвертируем в публичные URL
+            # ✅ УЛУЧШЕННАЯ ОБРАБОТКА ЗАГРУЗКИ ИЗОБРАЖЕНИЙ
             image_urls: List[str] = []
+            download_errors = []
+            
             for fid in (photos or [])[:5]:
                 try:
                     url = await _tg_file_to_public_url(bot, fid, cid=cid)
                     image_urls.append(url)
-                except Exception:
+                except OSError as e:
+                    # ✅ Специфичная обработка ошибок диска
+                    if e.errno == 28:  # ENOSPC - No space left on device
+                        log.error(_j("queue.disk_full", cid=cid, file_id=fid))
+                        download_errors.append("disk_full")
+                    else:
+                        log.exception(_j("queue.fetch_image.os_error", cid=cid, file_id=fid))
+                        download_errors.append("os_error")
+                except Exception as e:
                     log.exception(_j("queue.fetch_image.failed", cid=cid, file_id=fid))
+                    download_errors.append("unknown")
 
             had_input_photos = bool(photos)
             if had_input_photos and not image_urls:
-                await bot.send_message(
-                    chat_id,
-                    "Можно загрузить 1–5 изображений PNG/JPG/WebP, до 10 MB. Попробуйте снова 🙏",
-                )
+                # ✅ ИНФОРМАТИВНЫЕ СООБЩЕНИЯ В ЗАВИСИМОСТИ ОТ ТИПА ОШИБКИ
+                if "disk_full" in download_errors:
+                    await bot.send_message(
+                        chat_id,
+                        "⚠️ Временная проблема на сервере. Попробуйте через 1-2 минуты или напишите @guard_gpt"
+                    )
+                elif len(download_errors) == len(photos):
+                    # Все фото не удалось скачать
+                    await bot.send_message(
+                        chat_id,
+                        "⚠️ Не удалось обработать изображения.\n\n"
+                        "Убедитесь что:\n"
+                        "• Файлы в формате PNG/JPG/WebP\n"
+                        "• Размер до 10 MB каждый\n"
+                        "• Изображения не повреждены\n\n"
+                        "Если проблема повторяется — напишите @guard_gpt"
+                    )
+                else:
+                    # Часть фото загружена
+                    await bot.send_message(
+                        chat_id,
+                        f"⚠️ Удалось загрузить только {len(image_urls)} из {len(photos)} изображений.\n"
+                        f"Попробуйте отправить проблемные фото по одному или напишите @guard_gpt"
+                    )
                 return {"ok": False, "error": "images_download_failed"}
 
             try:
@@ -562,7 +716,6 @@ async def process_generation(
     
     finally:
         await api.aclose()
-
 
 class WorkerSettings:
     functions = [process_generation, broadcast_send]
