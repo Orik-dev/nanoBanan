@@ -531,7 +531,8 @@ async def send_generation_result(
             result_msg = await safe_send_photo(
                 bot,
                 chat_id,
-                image_url,
+                # image_url, 
+                FSInputFile(file_path),
                 caption="Готово ✅ Напишите новый промт, чтобы сгенерировать ещё.",
                 reply_markup=None,
             )
@@ -553,7 +554,8 @@ async def send_generation_result(
         result_msg = await safe_send_photo(
             bot,
             chat_id,
-            image_url,
+            # image_url,
+            FSInputFile(file_path),
             caption="<b>Если хотите что-то изменить или добавить напишите в чат ⬇️</b>",
             reply_markup=kb_final_result(),
         )

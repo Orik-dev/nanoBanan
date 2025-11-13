@@ -14,13 +14,13 @@
 
 CREDITS_PER_GENERATION = 1
 
-PACKS_RUB = [149, 290, 690, 990]
+PACKS_RUB = [149, 299, 690, 990]
 
 PACKS_CREDITS: dict[int, int] = {
-    149: 50,
-    290: 100,
-    690: 300,
-    990: 500,
+    149: 30,
+    299: 65,
+    690: 170,
+    990: 270,
 }
 
 def credits_for_rub(rub: int) -> int:

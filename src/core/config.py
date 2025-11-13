@@ -31,10 +31,18 @@ class Settings(BaseSettings):
     FREEPIK_BASE: str = "https://api.freepik.com/v1/ai/gemini-2-5-flash-image-preview"
     FREEPIK_WEBHOOK_SECRET: str  # секрет для подписи вебхуков HMAC-SHA256 (строка)
 
+    # # KIE.ai (Nano Banana)
+    # KIE_API_KEY: str
+    # KIE_BASE: str = "https://api.kie.ai/api/v1"
+    # KIE_MODEL: str = "google/nano-banana-edit"
+    # KIE_OUTPUT_FORMAT: str = "png"   # png | jpeg
+    # KIE_IMAGE_SIZE: str = "auto"     # auto | 1:1 | 3:4 | 9:16 | 4:3 | 16:9
+    
     # KIE.ai (Nano Banana)
     KIE_API_KEY: str
     KIE_BASE: str = "https://api.kie.ai/api/v1"
-    KIE_MODEL: str = "google/nano-banana-edit"
+    KIE_MODEL_CREATE: str = "google/nano-banana"  # создание без фото
+    KIE_MODEL_EDIT: str = "google/nano-banana-edit"  # редактирование с фото
     KIE_OUTPUT_FORMAT: str = "png"   # png | jpeg
     KIE_IMAGE_SIZE: str = "auto"     # auto | 1:1 | 3:4 | 9:16 | 4:3 | 16:9
     
