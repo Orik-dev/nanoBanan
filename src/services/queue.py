@@ -293,7 +293,7 @@ from pathlib import Path
 import httpx
 import redis.asyncio as aioredis
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramForbiddenError,TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.redis import DefaultKeyBuilder, RedisStorage
@@ -319,12 +319,75 @@ def _j(event: str, **fields) -> str:
     return json.dumps({"event": event, **fields}, ensure_ascii=False)
 
 
+# async def _tg_file_to_public_url(bot: Bot, file_id: str, *, cid: str) -> str:
+#     """
+#     Скачивает файл из Telegram и сохраняет для прокси.
+#     ✅ ИСПРАВЛЕНО: добавлена обработка ошибок диска
+#     """
+#     f = await bot.get_file(file_id)
+#     file_url = f"https://api.telegram.org/file/bot{settings.TELEGRAM_BOT_TOKEN}/{f.file_path}"
+
+#     async with httpx.AsyncClient(timeout=60) as client:
+#         resp = await client.get(file_url)
+#         resp.raise_for_status()
+#         content = resp.content
+
+#     # Сохраняем в shared volume
+#     temp_dir = Path("/app/temp_inputs")
+    
+#     try:
+#         temp_dir.mkdir(exist_ok=True, parents=True)
+#     except OSError as e:
+#         if e.errno == 28:  # ENOSPC
+#             log.error(_j("queue.disk_full", cid=cid, error="No space left on device"))
+#             raise OSError("Disk full") from e
+#         raise
+    
+#     ext = Path(f.file_path).suffix or ".jpg"
+#     filename = f"{uuid4().hex}{ext}"
+#     filepath = temp_dir / filename
+    
+#     try:
+#         with open(filepath, "wb") as out:
+#             out.write(content)
+#     except OSError as e:
+#         if e.errno == 28:  # ENOSPC
+#             log.error(_j("queue.disk_full_write", cid=cid, file=filename))
+#             raise OSError("Disk full") from e
+#         raise
+    
+#     log.info(_j("queue.file_saved", cid=cid, filename=filename, size=len(content)))
+    
+#     return f"{settings.PUBLIC_BASE_URL.rstrip('/')}/proxy/image/{filename}"
+
 async def _tg_file_to_public_url(bot: Bot, file_id: str, *, cid: str) -> str:
     """
-    Скачивает файл из Telegram и сохраняет для прокси.
-    ✅ ИСПРАВЛЕНО: добавлена обработка ошибок диска
+    ✅ ИСПРАВЛЕНО: проверка размера файла + обработка ошибок
     """
-    f = await bot.get_file(file_id)
+    # ✅ Сначала получаем информацию о файле
+    try:
+        f = await bot.get_file(file_id)
+    except TelegramBadRequest as e:
+        error_msg = str(e).lower()
+        if "file is too big" in error_msg:
+            log.error(_j("queue.file_too_big", cid=cid, file_id=file_id))
+            raise ValueError("file_too_big")
+        raise
+    
+    # ✅ Проверяем размер (лимит 20MB для Bot API)
+    file_size = f.file_size or 0
+    max_size = 20 * 1024 * 1024  # 20 MB
+    
+    if file_size > max_size:
+        log.error(_j(
+            "queue.file_size_limit", 
+            cid=cid, 
+            file_id=file_id,
+            size_mb=file_size / (1024 * 1024),
+            limit_mb=max_size / (1024 * 1024)
+        ))
+        raise ValueError("file_too_big")
+    
     file_url = f"https://api.telegram.org/file/bot{settings.TELEGRAM_BOT_TOKEN}/{f.file_path}"
 
     async with httpx.AsyncClient(timeout=60) as client:
@@ -332,13 +395,12 @@ async def _tg_file_to_public_url(bot: Bot, file_id: str, *, cid: str) -> str:
         resp.raise_for_status()
         content = resp.content
 
-    # Сохраняем в shared volume
     temp_dir = Path("/app/temp_inputs")
     
     try:
         temp_dir.mkdir(exist_ok=True, parents=True)
     except OSError as e:
-        if e.errno == 28:  # ENOSPC
+        if e.errno == 28:
             log.error(_j("queue.disk_full", cid=cid, error="No space left on device"))
             raise OSError("Disk full") from e
         raise
@@ -351,15 +413,24 @@ async def _tg_file_to_public_url(bot: Bot, file_id: str, *, cid: str) -> str:
         with open(filepath, "wb") as out:
             out.write(content)
     except OSError as e:
-        if e.errno == 28:  # ENOSPC
+        if e.errno == 28:
             log.error(_j("queue.disk_full_write", cid=cid, file=filename))
             raise OSError("Disk full") from e
         raise
     
-    log.info(_j("queue.file_saved", cid=cid, filename=filename, size=len(content)))
+    public_url = f"{settings.PUBLIC_BASE_URL.rstrip('/')}/proxy/image/{filename}"
     
-    return f"{settings.PUBLIC_BASE_URL.rstrip('/')}/proxy/image/{filename}"
-
+    log.info(_j(
+        "queue.file_saved", 
+        cid=cid, 
+        filename=filename, 
+        size=len(content),
+        size_mb=round(len(content) / (1024 * 1024), 2),
+        ext=ext,
+        public_url=public_url
+    ))
+    
+    return public_url
 
 async def enqueue_generation(
     chat_id: int,
@@ -478,7 +549,6 @@ async def _maybe_refund_if_deducted(
     except Exception:
         log.exception(_j("refund.db_error", cid=cid, task_uuid=task_uuid))
 
-
 async def process_generation(
     ctx: dict[str, Bot],
     chat_id: int,
@@ -487,7 +557,7 @@ async def process_generation(
     aspect_ratio: Optional[str] = None
 ) -> Dict[str, Any] | None:
     """
-    ✅ ИСПРАВЛЕНО: улучшена обработка ошибок диска и загрузки файлов
+    ✅ ИСПРАВЛЕНО: улучшена обработка ошибок диска, больших файлов и загрузки
     """
     bot: Bot = ctx["bot"]
     api = KieClient()
@@ -521,11 +591,21 @@ async def process_generation(
             # ✅ УЛУЧШЕННАЯ ОБРАБОТКА ЗАГРУЗКИ ИЗОБРАЖЕНИЙ
             image_urls: List[str] = []
             download_errors = []
+            file_too_big_count = 0  # ✅ счётчик больших файлов
             
             for fid in (photos or [])[:5]:
                 try:
                     url = await _tg_file_to_public_url(bot, fid, cid=cid)
                     image_urls.append(url)
+                except ValueError as e:
+                    # ✅ Специальная обработка "file too big"
+                    if "file_too_big" in str(e):
+                        log.warning(_j("queue.file_too_big_skip", cid=cid, file_id=fid))
+                        file_too_big_count += 1
+                        download_errors.append("file_too_big")
+                    else:
+                        log.exception(_j("queue.fetch_image.value_error", cid=cid, file_id=fid))
+                        download_errors.append("value_error")
                 except OSError as e:
                     # ✅ Специфичная обработка ошибок диска
                     if "Disk full" in str(e):
@@ -545,6 +625,16 @@ async def process_generation(
                     else:
                         log.exception(_j("queue.fetch_image.os_error", cid=cid, file_id=fid))
                         download_errors.append("os_error")
+                except TelegramBadRequest as e:
+                    # ✅ Обработка ошибок Telegram
+                    error_msg = str(e).lower()
+                    if "file is too big" in error_msg:
+                        log.warning(_j("queue.tg_file_too_big", cid=cid, file_id=fid))
+                        file_too_big_count += 1
+                        download_errors.append("file_too_big")
+                    else:
+                        log.exception(_j("queue.fetch_image.telegram_error", cid=cid, file_id=fid))
+                        download_errors.append("telegram_error")
                 except Exception as e:
                     log.exception(_j("queue.fetch_image.failed", cid=cid, file_id=fid))
                     download_errors.append("unknown")
@@ -552,7 +642,18 @@ async def process_generation(
             had_input_photos = bool(photos)
             if had_input_photos and not image_urls:
                 # ✅ ИНФОРМАТИВНЫЕ СООБЩЕНИЯ В ЗАВИСИМОСТИ ОТ ТИПА ОШИБКИ
-                if "disk_full" in download_errors:
+                if file_too_big_count > 0:
+                    await bot.send_message(
+                        chat_id,
+                        "⚠️ <b>Файлы слишком большие</b>\n\n"
+                        "Telegram Bot API не может скачать файлы больше 20 MB.\n\n"
+                        "✅ <b>Решение:</b>\n"
+                        "• Отправьте фото как <b>фото</b> (сжатое), а не как документ\n"
+                        "• Или используйте изображения меньшего размера\n"
+                        "• Максимум: 20 MB на файл",
+                        parse_mode="HTML"
+                    )
+                elif "disk_full" in download_errors:
                     await bot.send_message(
                         chat_id,
                         "⚠️ Временная проблема на сервере. Попробуйте через 1-2 минуты или напишите @guard_gpt"
@@ -563,7 +664,7 @@ async def process_generation(
                         "⚠️ Не удалось обработать изображения.\n\n"
                         "Убедитесь что:\n"
                         "• Файлы в формате PNG/JPG/WebP\n"
-                        "• Размер до 10 MB каждый\n"
+                        "• Размер до 20 MB каждый\n"
                         "• Изображения не повреждены\n\n"
                         "Если проблема повторяется — напишите @guard_gpt"
                     )
@@ -639,7 +740,166 @@ async def process_generation(
     
     finally:
         await api.aclose()
+# async def process_generation(
+#     ctx: dict[str, Bot],
+#     chat_id: int,
+#     prompt: str,
+#     photos: List[str],
+#     aspect_ratio: Optional[str] = None
+# ) -> Dict[str, Any] | None:
+#     """
+#     ✅ ИСПРАВЛЕНО: улучшена обработка ошибок диска и загрузки файлов
+#     """
+#     bot: Bot = ctx["bot"]
+#     api = KieClient()
+#     cid = uuid4().hex[:12]
 
+#     try:
+#         async with SessionLocal() as s:
+#             try:
+#                 q = await s.execute(select(User).where(User.chat_id == chat_id))
+#                 user = q.scalar_one_or_none()
+#                 if user is None:
+#                     await _clear_waiting_message(bot, chat_id)
+#                     try:
+#                         await bot.send_message(chat_id, "Нажмите /start для инициализации")
+#                     except Exception:
+#                         pass
+#                     log.warning(_j("queue.user_not_found", cid=cid, chat_id=chat_id))
+#                     return {"ok": False, "error": "user_not_found"}
+#             except OperationalError:
+#                 await _clear_waiting_message(bot, chat_id)
+#                 try:
+#                     await bot.send_message(chat_id, "⚠️ Ошибка БД. Напишите @guard_gpt")
+#                 except Exception:
+#                     pass
+#                 return {"ok": False, "error": "db_unavailable"}
+
+#             if user.balance_credits < CREDITS_PER_GENERATION:
+#                 await bot.send_message(chat_id, "Недостаточно генераций. /buy")
+#                 return {"ok": False, "error": "insufficient_credits"}
+
+#             # ✅ УЛУЧШЕННАЯ ОБРАБОТКА ЗАГРУЗКИ ИЗОБРАЖЕНИЙ
+#             image_urls: List[str] = []
+#             download_errors = []
+            
+#             for fid in (photos or [])[:5]:
+#                 try:
+#                     url = await _tg_file_to_public_url(bot, fid, cid=cid)
+#                     image_urls.append(url)
+#                 except OSError as e:
+#                     # ✅ Специфичная обработка ошибок диска
+#                     if "Disk full" in str(e):
+#                         log.error(_j("queue.disk_full", cid=cid, file_id=fid))
+#                         download_errors.append("disk_full")
+#                         # ✅ При заполнении диска - немедленно прерываем
+#                         await _clear_waiting_message(bot, chat_id)
+#                         try:
+#                             await bot.send_message(
+#                                 chat_id,
+#                                 "⚠️ Временная проблема на сервере.\n"
+#                                 "Попробуйте через 1-2 минуты или напишите @guard_gpt"
+#                             )
+#                         except Exception:
+#                             pass
+#                         return {"ok": False, "error": "disk_full"}
+#                     else:
+#                         log.exception(_j("queue.fetch_image.os_error", cid=cid, file_id=fid))
+#                         download_errors.append("os_error")
+#                 except Exception as e:
+#                     log.exception(_j("queue.fetch_image.failed", cid=cid, file_id=fid))
+#                     download_errors.append("unknown")
+
+#             had_input_photos = bool(photos)
+#             if had_input_photos and not image_urls:
+#                 # ✅ ИНФОРМАТИВНЫЕ СООБЩЕНИЯ В ЗАВИСИМОСТИ ОТ ТИПА ОШИБКИ
+#                 if "disk_full" in download_errors:
+#                     await bot.send_message(
+#                         chat_id,
+#                         "⚠️ Временная проблема на сервере. Попробуйте через 1-2 минуты или напишите @guard_gpt"
+#                     )
+#                 elif len(download_errors) == len(photos):
+#                     await bot.send_message(
+#                         chat_id,
+#                         "⚠️ Не удалось обработать изображения.\n\n"
+#                         "Убедитесь что:\n"
+#                         "• Файлы в формате PNG/JPG/WebP\n"
+#                         "• Размер до 10 MB каждый\n"
+#                         "• Изображения не повреждены\n\n"
+#                         "Если проблема повторяется — напишите @guard_gpt"
+#                     )
+#                 else:
+#                     await bot.send_message(
+#                         chat_id,
+#                         f"⚠️ Удалось загрузить только {len(image_urls)} из {len(photos)} изображений.\n"
+#                         f"Попробуйте отправить проблемные фото по одному или напишите @guard_gpt"
+#                     )
+#                 return {"ok": False, "error": "images_download_failed"}
+
+#             try:
+#                 callback = f"{settings.PUBLIC_BASE_URL.rstrip('/')}/webhook/kie"
+#                 task_uuid = await api.create_task(
+#                     prompt,
+#                     image_urls=image_urls if image_urls else None,
+#                     callback_url=callback,
+#                     output_format=settings.KIE_OUTPUT_FORMAT,
+#                     image_size=aspect_ratio or settings.KIE_IMAGE_SIZE,
+#                     cid=cid,
+#                 )
+#             except httpx.HTTPError as e:
+#                 code = getattr(getattr(e, "response", None), "status_code", None)
+#                 log.warning(_j("queue.kie_http_error", cid=cid, status_code=code))
+#                 await _clear_waiting_message(bot, chat_id)
+#                 try:
+#                     await bot.send_message(chat_id, "⚠️ Ошибка генерации. Напишите @guard_gpt")
+#                 except Exception:
+#                     pass
+#                 return {"ok": False, "error": f"kie_http_{code or 'unknown'}"}
+
+#             try:
+#                 task = Task(
+#                     user_id=user.id,
+#                     prompt=prompt,
+#                     task_uuid=task_uuid,
+#                     status="queued",
+#                     delivered=False
+#                 )
+#                 s.add(task)
+#                 await s.commit()
+#                 await s.refresh(task)
+#             except Exception:
+#                 log.warning(_j("queue.db_write_failed", cid=cid, task_uuid=task_uuid))
+
+#         return {"ok": True, "task_uuid": task_uuid}
+
+#     except KieError as e:
+#         log.error(_j("queue.kie_error", cid=cid, err=str(e)[:500]))
+#         await _clear_waiting_message(bot, chat_id)
+#         if 'task_uuid' in locals():
+#             await _maybe_refund_if_deducted(chat_id, task_uuid, CREDITS_PER_GENERATION, cid, reason="kie_error")
+#         try:
+#             await bot.send_message(chat_id, "⚠️ Ошибка генерации. Напишите @guard_gpt")
+#         except Exception:
+#             pass
+#         return {"ok": False, "error": str(e)[:500]}
+
+#     except TelegramForbiddenError:
+#         log.warning(_j("queue.tg_forbidden_on_start", cid=cid, chat_id=chat_id))
+#         return {"ok": False, "error": "telegram_forbidden"}
+
+#     except Exception:
+#         log.exception(_j("queue.fatal", cid=cid))
+#         await _clear_waiting_message(bot, chat_id)
+#         if 'task_uuid' in locals():
+#             await _maybe_refund_if_deducted(chat_id, task_uuid, CREDITS_PER_GENERATION, cid, reason="internal")
+#         try:
+#             await bot.send_message(chat_id, "⚠️ Ошибка. Напишите @guard_gpt")
+#         except Exception:
+#             pass
+#         return {"ok": False, "error": "internal"}
+    
+#     finally:
+#         await api.aclose()
 
 class WorkerSettings:
     functions = [process_generation, broadcast_send]
@@ -653,12 +913,12 @@ class WorkerSettings:
     job_timeout = 259200
     keep_result = 0
     
-cron_jobs = [
+    # ✅ ДОБАВЛЕНО: регистрация cron задач
+    cron_jobs = [
         # Очистка БД каждые 10 минут
         cron(cleanup_database_task, minute={0, 10, 20, 30, 40, 50}, run_at_startup=True),
         
-        # Бэкап БД каждый час (в :05 минут)
+        # Бэкап БД каждый час (в :05 минут каждого часа)
         cron(backup_database_task, minute=5, run_at_startup=False),
     ]
-
     
