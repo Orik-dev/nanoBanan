@@ -192,16 +192,20 @@
 
 #                 async with httpx.AsyncClient() as client:
 #                     last_exc = None
-#                     for _ in range(3):
+#                     for attempt in range(1, 4):
 #                         try:
-#                             r = await client.get(image_url, timeout=120)
+#                             # ✅ ИСПРАВЛЕНО: добавлен Authorization header
+#                             headers = {"Authorization": f"Bearer {settings.KIE_API_KEY}"}
+#                             r = await client.get(image_url, headers=headers, timeout=120)
 #                             r.raise_for_status()
 #                             with open(local_path, "wb") as f:
 #                                 f.write(r.content)
 #                             last_exc = None
+#                             log.info(json.dumps({"event": "kie_webhook.download_ok", "task_id": task_id, "attempt": attempt}, ensure_ascii=False))
 #                             break
 #                         except Exception as e:
 #                             last_exc = e
+#                             log.warning(json.dumps({"event": "kie_webhook.download_retry", "task_id": task_id, "attempt": attempt, "error": str(e)[:200]}, ensure_ascii=False))
 #                             await asyncio.sleep(2)
 
 #                     if last_exc:
@@ -267,6 +271,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+from pathlib import Path
 from typing import Optional, Tuple
 
 import httpx
@@ -290,15 +296,18 @@ router = APIRouter()
 log = logging.getLogger("kie")
 
 
-# -------------------- webhook lock --------------------
-
 async def _acquire_webhook_lock(task_id: str, ttl: int = 180) -> Optional[Tuple[aioredis.Redis, str]]:
+    """
+    ✅ ИСПРАВЛЕНО: закрываем Redis если не получили lock
+    """
     r = aioredis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB_CACHE)
     key = f"wb:lock:kie:{task_id}"
     try:
         ok = await r.set(key, "1", nx=True, ex=ttl)
         if ok:
             return r, key
+        # ✅ Закрываем если не получили lock
+        await r.aclose()
         return None
     except Exception:
         try:
@@ -332,8 +341,6 @@ async def _clear_pending_marker(task_id: str) -> None:
         pass
 
 
-# -------------------- FSM cleanup --------------------
-
 async def _clear_wait_and_reset(bot, chat_id: int, *, back_to: str = "auto") -> None:
     r = aioredis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB_FSM)
     try:
@@ -364,12 +371,10 @@ async def _clear_wait_and_reset(bot, chat_id: int, *, back_to: str = "auto") -> 
         await r.aclose()
 
 
-# -------------------- webhook --------------------
-
 @router.post("/webhook/kie")
 async def kie_callback(req: Request):
     """
-    Обработка webhook от KIE AI.
+    ✅ ИСПРАВЛЕНО: Обработка webhook от KIE AI с очисткой временных файлов
     """
     try:
         payload = await req.json()
@@ -377,7 +382,6 @@ async def kie_callback(req: Request):
         log.warning(json.dumps({"event": "kie_webhook.invalid_json"}, ensure_ascii=False))
         return JSONResponse({"ok": False, "error": "invalid_json"}, status_code=400)
 
-    # Парсинг payload
     data = payload.get("data") or {}
     task_id = data.get("taskId")
     state = str(data.get("state") or "").lower()
@@ -390,7 +394,6 @@ async def kie_callback(req: Request):
 
     await _clear_pending_marker(task_id)
 
-    # Эксклюзивная обработка
     lock = await _acquire_webhook_lock(task_id, ttl=180)
     if lock is None:
         log.info(json.dumps({"event": "kie_webhook.skip_locked", "task_id": task_id}, ensure_ascii=False))
@@ -410,9 +413,7 @@ async def kie_callback(req: Request):
             user = await s.get(User, task.user_id)
             bot = req.app.state.bot
 
-            # ---- SUCCESS ----
             if state == "success":
-                # Парсинг результатов
                 try:
                     parsed = json.loads(result_json)
                     result_urls = parsed.get("resultUrls") or []
@@ -447,17 +448,17 @@ async def kie_callback(req: Request):
                 except Exception:
                     pass
 
-                # Скачать результат
+                # ✅ ИСПРАВЛЕНО: скачивание с правильным Authorization header
                 image_url = result_urls[0]
                 out_dir = "/tmp/nanobanana"
                 os.makedirs(out_dir, exist_ok=True)
                 local_path = os.path.join(out_dir, f"{task_id}.png")
 
+                # ✅ Используем context manager для автоматического закрытия
                 async with httpx.AsyncClient() as client:
                     last_exc = None
                     for attempt in range(1, 4):
                         try:
-                            # ✅ ИСПРАВЛЕНО: добавлен Authorization header
                             headers = {"Authorization": f"Bearer {settings.KIE_API_KEY}"}
                             r = await client.get(image_url, headers=headers, timeout=120)
                             r.raise_for_status()
@@ -469,7 +470,8 @@ async def kie_callback(req: Request):
                         except Exception as e:
                             last_exc = e
                             log.warning(json.dumps({"event": "kie_webhook.download_retry", "task_id": task_id, "attempt": attempt, "error": str(e)[:200]}, ensure_ascii=False))
-                            await asyncio.sleep(2)
+                            if attempt < 3:
+                                await asyncio.sleep(2)
 
                     if last_exc:
                         await _clear_wait_and_reset(bot, user.chat_id, back_to="auto")
@@ -483,14 +485,25 @@ async def kie_callback(req: Request):
                 await send_generation_result(user.chat_id, task_id, task.prompt, image_url, local_path, bot)
                 await s.execute(update(Task).where(Task.id == task.id).values(delivered=True))
                 await s.commit()
+                
+                # ✅ ДОБАВЛЕНО: удаление временных файлов СРАЗУ после отправки
+                try:
+                    # Извлечь filename из image_url
+                    match = re.search(r'/proxy/image/([^/]+)$', image_url)
+                    if match:
+                        temp_file = Path("/app/temp_inputs") / match.group(1)
+                        if temp_file.exists():
+                            temp_file.unlink()
+                            log.info(json.dumps({"event": "kie_webhook.temp_file_cleaned", "file": str(temp_file)}, ensure_ascii=False))
+                except Exception as e:
+                    log.warning(json.dumps({"event": "kie_webhook.cleanup_failed", "error": str(e)[:100]}, ensure_ascii=False))
+                
                 log.info(json.dumps({"event": "kie_webhook.success", "task_id": task_id}, ensure_ascii=False))
                 return JSONResponse({"ok": True})
 
-            # ---- FAIL ----
             if state == "fail":
                 await _clear_wait_and_reset(bot, user.chat_id, back_to="auto")
                 
-                # Показываем сообщение ОДИН раз
                 try:
                     rr = aioredis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB_CACHE)
                     shown = await rr.setnx(f"msg:fail:{task_id}", "1")
@@ -521,7 +534,6 @@ async def kie_callback(req: Request):
                 }, ensure_ascii=False))
                 return JSONResponse({"ok": True})
 
-            # ---- WAITING (промежуточный статус) ----
             log.info(json.dumps({"event": "kie_webhook.waiting", "task_id": task_id}, ensure_ascii=False))
             return JSONResponse({"ok": True})
 

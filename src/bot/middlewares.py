@@ -54,13 +54,39 @@ class ErrorLoggingMiddleware(BaseMiddleware):
         # ❌ УБРАНО: finally блок с logger.info("message_processed") - слишком много логов
 
 
+# class RateLimitMiddleware(BaseMiddleware):
+#     def __init__(self, redis_client, limit_per_min: int):
+#         self.redis = redis_client
+#         self.limit = limit_per_min
+
+#     async def __call__(self, handler, event: Message, data):
+#         try:
+#             key = f"rl:{event.from_user.id}"
+#             count = await self.redis.incr(key)
+#             if count == 1:
+#                 await self.redis.expire(key, 60)
+#             if count > self.limit:
+#                 try:
+#                     await event.answer("Слишком много запросов. Попробуйте через минуту.")
+#                 except (TelegramForbiddenError, TelegramBadRequest):
+#                     pass
+#                 return
+#         except Exception:
+#             # ✅ ЕСЛИ REDIS УПАЛ - ПРОПУСКАЕМ БЕЗ RATE LIMIT
+#             logger.warning(f"Rate limit Redis error for user {event.from_user.id}")  # ✅ ИСПРАВЛЕНО: log → logger
+#             pass
+        
+#         return await handler(event, data)
+
 class RateLimitMiddleware(BaseMiddleware):
     def __init__(self, redis_client, limit_per_min: int):
         self.redis = redis_client
         self.limit = limit_per_min
 
     async def __call__(self, handler, event: Message, data):
+        redis_conn = None  # ✅ Локальная переменная
         try:
+            # ✅ Используем connection pool, а не создаем новый
             key = f"rl:{event.from_user.id}"
             count = await self.redis.incr(key)
             if count == 1:
@@ -71,9 +97,9 @@ class RateLimitMiddleware(BaseMiddleware):
                 except (TelegramForbiddenError, TelegramBadRequest):
                     pass
                 return
-        except Exception:
-            # ✅ ЕСЛИ REDIS УПАЛ - ПРОПУСКАЕМ БЕЗ RATE LIMIT
-            logger.warning(f"Rate limit Redis error for user {event.from_user.id}")  # ✅ ИСПРАВЛЕНО: log → logger
+        except Exception as e:
+            # ✅ Логируем, но пропускаем запрос
+            logger.warning(f"Rate limit Redis error for user {event.from_user.id}: {e}")
             pass
         
         return await handler(event, data)
