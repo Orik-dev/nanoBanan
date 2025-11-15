@@ -21,6 +21,10 @@
 # FROM base AS runtime
 # ENV PATH="/home/appuser/.local/bin:${PATH}"
 # RUN useradd -m -u 10001 appuser
+
+# # ✅ ДОБАВЛЕНО: создаем директорию с правами appuser
+# RUN mkdir -p /app/temp_inputs && chown -R appuser:appuser /app/temp_inputs
+
 # USER appuser
 
 # COPY --from=deps /wheels /wheels
@@ -42,6 +46,7 @@ ENV TZ=Asia/Baku
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl tini build-essential tzdata ffmpeg \
+    default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

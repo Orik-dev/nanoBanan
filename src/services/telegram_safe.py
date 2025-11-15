@@ -111,26 +111,169 @@ async def safe_send_photo(
         log.exception("send_photo failed chat_id=%s", chat_id)
     return None
 
+# async def safe_send_document(
+#     bot: Bot,
+#     chat_id: int,
+#     file_path: str,
+#     caption: Optional[str] = None,
+# ):
+#     try:
+#         return await bot.send_document(chat_id, document=FSInputFile(file_path), caption=caption)
+#     except TelegramRetryAfter as e:
+#         await asyncio.sleep(e.retry_after)
+#         try:
+#             return await bot.send_document(chat_id, document=FSInputFile(file_path), caption=caption)
+#         except TelegramForbiddenError:
+#             await _maybe_delete_user(chat_id)
+#         except Exception:
+#             log.exception("send_document failed after retry chat_id=%s", chat_id)
+#     except TelegramForbiddenError:
+#         await _maybe_delete_user(chat_id)
+#     except Exception:
+#         log.exception("send_document failed chat_id=%s", chat_id)
+#     return None
+
+async def safe_send_photo(
+    bot: Bot,
+    chat_id: int,
+    photo: Union[FSInputFile, bytes],
+    caption: Optional[str] = None,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    parse_mode: str = "HTML",
+) -> Optional[Message]:
+    """
+    ✅ УЛУЧШЕНО: с retry и fallback на документ при ошибках
+    """
+    # ✅ Проверяем размер файла если это FSInputFile
+    if isinstance(photo, FSInputFile):
+        try:
+            file_size = os.path.getsize(photo.path)
+            file_size_mb = file_size / (1024 * 1024)
+            
+            # Telegram лимит для фото: 10MB
+            if file_size_mb > 10:
+                log.warning(f"Photo too large ({file_size_mb:.2f} MB), sending as document")
+                return await safe_send_document(bot, chat_id, photo.path, caption=caption)
+        except Exception:
+            pass
+    
+    # ✅ Retry механизм
+    for attempt in range(1, 4):
+        try:
+            return await bot.send_photo(
+                chat_id, 
+                photo=photo, 
+                caption=caption, 
+                reply_markup=reply_markup, 
+                parse_mode=parse_mode
+            )
+            
+        except TelegramBadRequest as e:
+            error_msg = str(e).lower()
+            
+            # ✅ Internal Server Error - retry
+            if "internal" in error_msg and attempt < 3:
+                wait_time = 3 * attempt
+                log.warning(f"Telegram internal error, retry {attempt}/3 in {wait_time}s for chat {chat_id}")
+                await asyncio.sleep(wait_time)
+                continue
+            
+            # ✅ На последней попытке - fallback на документ
+            if attempt == 3:
+                log.error(f"Failed to send photo after 3 attempts, trying as document: {error_msg[:100]}")
+                
+                if isinstance(photo, FSInputFile):
+                    try:
+                        return await safe_send_document(bot, chat_id, photo.path, caption=caption)
+                    except Exception as doc_err:
+                        log.error(f"Failed to send as document too: {doc_err}")
+                
+                log.exception(f"send_photo failed chat_id={chat_id}")
+                return None
+        
+        except TelegramRetryAfter as e:
+            if attempt < 3:
+                await asyncio.sleep(e.retry_after)
+                continue
+            else:
+                log.exception(f"send_photo failed after retry chat_id={chat_id}")
+                return None
+        
+        except TelegramForbiddenError:
+            await _maybe_delete_user(chat_id)
+            return None
+        
+        except Exception as e:
+            # Timeout или другие ошибки
+            if "timeout" in str(e).lower() and attempt < 3:
+                wait_time = 5 * attempt
+                log.warning(f"Timeout, retry {attempt}/3 in {wait_time}s for chat {chat_id}")
+                await asyncio.sleep(wait_time)
+                continue
+            
+            log.exception(f"send_photo failed chat_id={chat_id}")
+            return None
+    
+    return None
+
+
 async def safe_send_document(
     bot: Bot,
     chat_id: int,
     file_path: str,
     caption: Optional[str] = None,
 ):
-    try:
-        return await bot.send_document(chat_id, document=FSInputFile(file_path), caption=caption)
-    except TelegramRetryAfter as e:
-        await asyncio.sleep(e.retry_after)
+    """✅ УЛУЧШЕНО: с retry механизмом"""
+    # ✅ Проверка существования файла
+    if not os.path.exists(file_path):
+        log.error(f"File not found: {file_path}")
+        return None
+    
+    # ✅ Retry механизм
+    for attempt in range(1, 4):
         try:
-            return await bot.send_document(chat_id, document=FSInputFile(file_path), caption=caption)
+            return await bot.send_document(
+                chat_id, 
+                document=FSInputFile(file_path), 
+                caption=caption,
+                request_timeout=120  # ✅ Увеличенный таймаут
+            )
+            
+        except TelegramBadRequest as e:
+            error_msg = str(e).lower()
+            
+            if "internal" in error_msg and attempt < 3:
+                wait_time = 3 * attempt
+                log.warning(f"Telegram internal error, retry {attempt}/3 in {wait_time}s")
+                await asyncio.sleep(wait_time)
+                continue
+            
+            if attempt == 3:
+                log.exception(f"send_document failed chat_id={chat_id}")
+                return None
+        
+        except TelegramRetryAfter as e:
+            if attempt < 3:
+                await asyncio.sleep(e.retry_after)
+                continue
+            else:
+                log.exception(f"send_document failed after retry chat_id={chat_id}")
+                return None
+        
         except TelegramForbiddenError:
             await _maybe_delete_user(chat_id)
-        except Exception:
-            log.exception("send_document failed after retry chat_id=%s", chat_id)
-    except TelegramForbiddenError:
-        await _maybe_delete_user(chat_id)
-    except Exception:
-        log.exception("send_document failed chat_id=%s", chat_id)
+            return None
+        
+        except Exception as e:
+            if "timeout" in str(e).lower() and attempt < 3:
+                wait_time = 5 * attempt
+                log.warning(f"Timeout, retry {attempt}/3 in {wait_time}s")
+                await asyncio.sleep(wait_time)
+                continue
+            
+            log.exception(f"send_document failed chat_id={chat_id}")
+            return None
+    
     return None
 
 async def safe_edit_text(
