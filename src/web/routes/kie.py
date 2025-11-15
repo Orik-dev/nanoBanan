@@ -4,6 +4,8 @@
 # import json
 # import logging
 # import os
+# import re
+# from pathlib import Path
 # from typing import Optional, Tuple
 
 # import httpx
@@ -27,15 +29,18 @@
 # log = logging.getLogger("kie")
 
 
-# # -------------------- webhook lock --------------------
-
 # async def _acquire_webhook_lock(task_id: str, ttl: int = 180) -> Optional[Tuple[aioredis.Redis, str]]:
+#     """
+#     ✅ ИСПРАВЛЕНО: закрываем Redis если не получили lock
+#     """
 #     r = aioredis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB_CACHE)
 #     key = f"wb:lock:kie:{task_id}"
 #     try:
 #         ok = await r.set(key, "1", nx=True, ex=ttl)
 #         if ok:
 #             return r, key
+#         # ✅ Закрываем если не получили lock
+#         await r.aclose()
 #         return None
 #     except Exception:
 #         try:
@@ -69,8 +74,6 @@
 #         pass
 
 
-# # -------------------- FSM cleanup --------------------
-
 # async def _clear_wait_and_reset(bot, chat_id: int, *, back_to: str = "auto") -> None:
 #     r = aioredis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB_FSM)
 #     try:
@@ -101,12 +104,10 @@
 #         await r.aclose()
 
 
-# # -------------------- webhook --------------------
-
 # @router.post("/webhook/kie")
 # async def kie_callback(req: Request):
 #     """
-#     Обработка webhook от KIE AI.
+#     ✅ ИСПРАВЛЕНО: Обработка webhook от KIE AI с очисткой временных файлов
 #     """
 #     try:
 #         payload = await req.json()
@@ -114,7 +115,6 @@
 #         log.warning(json.dumps({"event": "kie_webhook.invalid_json"}, ensure_ascii=False))
 #         return JSONResponse({"ok": False, "error": "invalid_json"}, status_code=400)
 
-#     # Парсинг payload
 #     data = payload.get("data") or {}
 #     task_id = data.get("taskId")
 #     state = str(data.get("state") or "").lower()
@@ -127,7 +127,6 @@
 
 #     await _clear_pending_marker(task_id)
 
-#     # Эксклюзивная обработка
 #     lock = await _acquire_webhook_lock(task_id, ttl=180)
 #     if lock is None:
 #         log.info(json.dumps({"event": "kie_webhook.skip_locked", "task_id": task_id}, ensure_ascii=False))
@@ -147,9 +146,7 @@
 #             user = await s.get(User, task.user_id)
 #             bot = req.app.state.bot
 
-#             # ---- SUCCESS ----
 #             if state == "success":
-#                 # Парсинг результатов
 #                 try:
 #                     parsed = json.loads(result_json)
 #                     result_urls = parsed.get("resultUrls") or []
@@ -184,17 +181,17 @@
 #                 except Exception:
 #                     pass
 
-#                 # Скачать результат
+#                 # ✅ ИСПРАВЛЕНО: скачивание с правильным Authorization header
 #                 image_url = result_urls[0]
 #                 out_dir = "/tmp/nanobanana"
 #                 os.makedirs(out_dir, exist_ok=True)
 #                 local_path = os.path.join(out_dir, f"{task_id}.png")
 
+#                 # ✅ Используем context manager для автоматического закрытия
 #                 async with httpx.AsyncClient() as client:
 #                     last_exc = None
 #                     for attempt in range(1, 4):
 #                         try:
-#                             # ✅ ИСПРАВЛЕНО: добавлен Authorization header
 #                             headers = {"Authorization": f"Bearer {settings.KIE_API_KEY}"}
 #                             r = await client.get(image_url, headers=headers, timeout=120)
 #                             r.raise_for_status()
@@ -206,7 +203,8 @@
 #                         except Exception as e:
 #                             last_exc = e
 #                             log.warning(json.dumps({"event": "kie_webhook.download_retry", "task_id": task_id, "attempt": attempt, "error": str(e)[:200]}, ensure_ascii=False))
-#                             await asyncio.sleep(2)
+#                             if attempt < 3:
+#                                 await asyncio.sleep(2)
 
 #                     if last_exc:
 #                         await _clear_wait_and_reset(bot, user.chat_id, back_to="auto")
@@ -220,14 +218,25 @@
 #                 await send_generation_result(user.chat_id, task_id, task.prompt, image_url, local_path, bot)
 #                 await s.execute(update(Task).where(Task.id == task.id).values(delivered=True))
 #                 await s.commit()
+                
+#                 # ✅ ДОБАВЛЕНО: удаление временных файлов СРАЗУ после отправки
+#                 try:
+#                     # Извлечь filename из image_url
+#                     match = re.search(r'/proxy/image/([^/]+)$', image_url)
+#                     if match:
+#                         temp_file = Path("/app/temp_inputs") / match.group(1)
+#                         if temp_file.exists():
+#                             temp_file.unlink()
+#                             log.info(json.dumps({"event": "kie_webhook.temp_file_cleaned", "file": str(temp_file)}, ensure_ascii=False))
+#                 except Exception as e:
+#                     log.warning(json.dumps({"event": "kie_webhook.cleanup_failed", "error": str(e)[:100]}, ensure_ascii=False))
+                
 #                 log.info(json.dumps({"event": "kie_webhook.success", "task_id": task_id}, ensure_ascii=False))
 #                 return JSONResponse({"ok": True})
 
-#             # ---- FAIL ----
 #             if state == "fail":
 #                 await _clear_wait_and_reset(bot, user.chat_id, back_to="auto")
                 
-#                 # Показываем сообщение ОДИН раз
 #                 try:
 #                     rr = aioredis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB_CACHE)
 #                     shown = await rr.setnx(f"msg:fail:{task_id}", "1")
@@ -258,7 +267,6 @@
 #                 }, ensure_ascii=False))
 #                 return JSONResponse({"ok": True})
 
-#             # ---- WAITING (промежуточный статус) ----
 #             log.info(json.dumps({"event": "kie_webhook.waiting", "task_id": task_id}, ensure_ascii=False))
 #             return JSONResponse({"ok": True})
 
@@ -280,6 +288,7 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, update
+from sqlalchemy.exc import OperationalError
 
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
@@ -371,10 +380,61 @@ async def _clear_wait_and_reset(bot, chat_id: int, *, back_to: str = "auto") -> 
         await r.aclose()
 
 
+async def _update_with_retry(session, stmt, max_retries=3) -> bool:
+    """
+    ✅ НОВОЕ: Выполнение UPDATE с retry для deadlock
+    
+    Args:
+        session: SQLAlchemy async session
+        stmt: UPDATE statement для выполнения
+        max_retries: Максимальное количество попыток
+        
+    Returns:
+        True если успешно, False если deadlock после всех попыток
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            await session.execute(stmt)
+            await session.commit()
+            return True
+            
+        except OperationalError as e:
+            await session.rollback()
+            error_code = getattr(e.orig, 'args', [None])[0] if hasattr(e, 'orig') else None
+            
+            # 1213 = Deadlock
+            if error_code == 1213:
+                if attempt < max_retries:
+                    wait_time = 0.5 * attempt  # 0.5s, 1s, 1.5s
+                    log.warning(json.dumps({
+                        "event": "kie_webhook.deadlock_retry",
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "wait_time": wait_time
+                    }, ensure_ascii=False))
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    log.error(json.dumps({
+                        "event": "kie_webhook.deadlock_failed",
+                        "attempts": max_retries
+                    }, ensure_ascii=False))
+                    return False
+            else:
+                # Другая ошибка - пробросим
+                raise
+                
+        except Exception:
+            await session.rollback()
+            raise
+            
+    return False
+
+
 @router.post("/webhook/kie")
 async def kie_callback(req: Request):
     """
-    ✅ ИСПРАВЛЕНО: Обработка webhook от KIE AI с очисткой временных файлов
+    ✅ УЛУЧШЕНО: Обработка webhook от KIE AI с retry для deadlock
     """
     try:
         payload = await req.json()
@@ -423,22 +483,44 @@ async def kie_callback(req: Request):
                 if not result_urls:
                     await _clear_wait_and_reset(bot, user.chat_id, back_to="auto")
                     await safe_send_text(bot, user.chat_id, "⚠️ Произошла ошибка.\nНапишите в поддержку: @guard_gpt")
-                    await s.execute(update(Task).where(Task.id == task.id).values(delivered=True, status="completed"))
-                    await s.commit()
+                    
+                    # ✅ UPDATE с retry
+                    success = await _update_with_retry(
+                        s,
+                        update(Task).where(Task.id == task.id).values(delivered=True, status="completed")
+                    )
+                    if not success:
+                        log.error(json.dumps({"event": "kie_webhook.update_failed_deadlock", "task_id": task_id}, ensure_ascii=False))
+                    
                     log.info(json.dumps({"event": "kie_webhook.no_urls", "task_id": task_id}, ensure_ascii=False))
                     return JSONResponse({"ok": True})
 
-                # Списание кредитов
+                # Списание кредитов с retry
                 credits_used = 1
                 before = int(user.balance_credits or 0)
                 new_balance = max(0, before - credits_used)
-                await s.execute(
+                
+                # ✅ UPDATE User с retry
+                success = await _update_with_retry(
+                    s,
                     update(User).where(User.id == user.id).values(balance_credits=new_balance)
                 )
-                await s.execute(
+                if not success:
+                    log.error(json.dumps({"event": "kie_webhook.user_update_failed", "task_id": task_id}, ensure_ascii=False))
+                    await _clear_wait_and_reset(bot, user.chat_id, back_to="auto")
+                    await safe_send_text(bot, user.chat_id, "⚠️ Произошла ошибка.\nНапишите в поддержку: @guard_gpt")
+                    return JSONResponse({"ok": True})
+                
+                # ✅ UPDATE Task с retry
+                success = await _update_with_retry(
+                    s,
                     update(Task).where(Task.id == task.id).values(status="completed", credits_used=credits_used)
                 )
-                await s.commit()
+                if not success:
+                    log.error(json.dumps({"event": "kie_webhook.task_update_failed", "task_id": task_id}, ensure_ascii=False))
+                    await _clear_wait_and_reset(bot, user.chat_id, back_to="auto")
+                    await safe_send_text(bot, user.chat_id, "⚠️ Произошла ошибка.\nНапишите в поддержку: @guard_gpt")
+                    return JSONResponse({"ok": True})
 
                 # Маркер списания
                 try:
@@ -448,7 +530,7 @@ async def kie_callback(req: Request):
                 except Exception:
                     pass
 
-                # ✅ ИСПРАВЛЕНО: скачивание с правильным Authorization header
+                # ✅ Скачивание с правильным Authorization header
                 image_url = result_urls[0]
                 out_dir = "/tmp/nanobanana"
                 os.makedirs(out_dir, exist_ok=True)
@@ -476,17 +558,28 @@ async def kie_callback(req: Request):
                     if last_exc:
                         await _clear_wait_and_reset(bot, user.chat_id, back_to="auto")
                         await safe_send_text(bot, user.chat_id, "⚠️ Произошла ошибка.\nНапишите в поддержку: @guard_gpt")
-                        await s.execute(update(Task).where(Task.id == task.id).values(delivered=True))
-                        await s.commit()
+                        
+                        # ✅ UPDATE с retry
+                        await _update_with_retry(
+                            s,
+                            update(Task).where(Task.id == task.id).values(delivered=True)
+                        )
+                        
                         log.warning(json.dumps({"event": "kie_webhook.download_failed", "task_id": task_id}, ensure_ascii=False))
                         return JSONResponse({"ok": True})
 
                 # Отправить результат
                 await send_generation_result(user.chat_id, task_id, task.prompt, image_url, local_path, bot)
-                await s.execute(update(Task).where(Task.id == task.id).values(delivered=True))
-                await s.commit()
                 
-                # ✅ ДОБАВЛЕНО: удаление временных файлов СРАЗУ после отправки
+                # ✅ UPDATE delivered с retry
+                success = await _update_with_retry(
+                    s,
+                    update(Task).where(Task.id == task.id).values(delivered=True)
+                )
+                if not success:
+                    log.error(json.dumps({"event": "kie_webhook.delivered_update_failed", "task_id": task_id}, ensure_ascii=False))
+                
+                # ✅ Удаление временных файлов СРАЗУ после отправки
                 try:
                     # Извлечь filename из image_url
                     match = re.search(r'/proxy/image/([^/]+)$', image_url)
@@ -519,13 +612,17 @@ async def kie_callback(req: Request):
                 except Exception:
                     pass
 
-                await s.execute(
+                # ✅ UPDATE с retry для failed task
+                success = await _update_with_retry(
+                    s,
                     update(Task).where(Task.id == task.id).values(
                         delivered=True,
                         status="failed"
                     )
                 )
-                await s.commit()
+                if not success:
+                    log.error(json.dumps({"event": "kie_webhook.fail_update_failed", "task_id": task_id}, ensure_ascii=False))
+                
                 log.info(json.dumps({
                     "event": "kie_webhook.fail",
                     "task_id": task_id,
