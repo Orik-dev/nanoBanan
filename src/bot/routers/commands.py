@@ -241,10 +241,10 @@ async def show_other_bots(m: Message, state: FSMContext):
         "👉 <a href='https://t.me/veo_google_ai_bot'>@veo_google_ai_bot</a>\n\n"
         "🖼 <b>Реалистичное оживление фото</b> — оживляет статичные фотографии, превращая их в видео.\n"
         "👉 <a href='https://t.me/Ozhivlenie_foto_bot'>@Ozhivlenie_foto_bot</a>\n\n"
-        "📩 <b>Скачивание из Instagram/YouTube/TikTok</b> — скачивайте видео бесплатно.\n"
-        "👉 <a href='https://t.me/save_video_aibot'>@save_video_aibot</a>"
+        "✨ <b>Seedream 4.0 · Редактирование и создание фото</b> — китайская нейросеть для редактирования и создания фотографий.\n"
+        "👉 <a href='https://t.me/seedream_ibot'>@seedream_ibot</a>"
     )
-    await safe_send_text(m.bot, m.chat.id, text,disable_web_page_preview=True)
+    await safe_send_text(m.bot, m.chat.id, text, disable_web_page_preview=True)
 
 
 @router.message(Command("live"))
